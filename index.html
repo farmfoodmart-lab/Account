@@ -1,0 +1,232 @@
+﻿<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ระบบบัญชีคู่</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>ระบบบัญชีคู่ (Double-Entry Accounting)</h1>
+    <nav id="main-nav">
+      <button data-tab="dashboard" class="active">แดชบอร์ด</button>
+      <button data-tab="settings">ตั้งค่า</button>
+      <button data-tab="import">นำเข้า Excel</button>
+      <button data-tab="customers">รายชื่อลูกค้า</button>
+      <button data-tab="customer-costs">ต้นทุน/ขายลูกค้า</button>
+      <button data-tab="incoming-docs">เอกสารรับเข้า</button>
+      <button data-tab="autodesc">คำอธิบายอัตโนมัติ</button>
+      <button data-tab="accounts">หมวดหมู่บัญชี</button>
+      <button data-tab="journal">บันทึกรายการ</button>
+      <button data-tab="ledger">บัญชีแยกประเภท</button>
+      <button data-tab="trial">งบทดลอง</button>
+      <button data-tab="receivables">ลูกหนี้</button>
+      <button data-tab="worksheet">กระดาษทำการ</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="dashboard" class="tab active">
+      <h2>แดชบอร์ด</h2>
+      <div id="dashboard-view"></div>
+    </section>
+
+    <section id="accounts" class="tab">
+      <h2>หมวดหมู่บัญชี</h2>
+      <form id="account-form" class="card">
+        <input type="text" id="acc-code" placeholder="รหัสบัญชี (เช่น 101)" required>
+        <input type="text" id="acc-name" placeholder="ชื่อบัญชี" required>
+        <select id="acc-type" required>
+          <option value="">-- ประเภท --</option>
+          <option value="asset">สินทรัพย์ (Asset)</option>
+          <option value="liability">หนี้สิน (Liability)</option>
+          <option value="equity">ทุน (Equity)</option>
+          <option value="revenue">รายได้ (Revenue)</option>
+          <option value="expense">ค่าใช้จ่าย (Expense)</option>
+        </select>
+        <button type="submit" id="acc-submit">เพิ่มบัญชี</button>
+        <button type="button" id="acc-cancel" class="secondary" hidden>ยกเลิก</button>
+      </form>
+      <table id="accounts-table">
+        <thead><tr><th>รหัส</th><th>ชื่อบัญชี</th><th>ประเภท</th><th>จัดการ</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="journal" class="tab">
+      <h2>บันทึกรายการ (Journal Entry)</h2>
+      <form id="journal-form" class="card">
+        <div class="row">
+          <label>วันที่ <input type="date" id="je-date" required></label>
+          <label>คำอธิบาย <input type="text" id="je-desc" placeholder="รายละเอียดรายการ" list="auto-desc-list" required></label>
+        </div>
+        <datalist id="auto-desc-list"></datalist>
+        <div id="je-lines"></div>
+        <div class="row actions">
+          <button type="button" id="add-line" class="secondary">+ เพิ่มบรรทัด</button>
+          <div class="totals">เดบิต: <span id="total-debit">0.00</span> | เครดิต: <span id="total-credit">0.00</span></div>
+          <button type="submit">บันทึก</button>
+        </div>
+        <p id="je-error" class="error"></p>
+      </form>
+      <h3>รายการที่บันทึกแล้ว</h3>
+      <div id="journal-list"></div>
+    </section>
+
+    <section id="ledger" class="tab">
+      <h2>บัญชีแยกประเภท (General Ledger)</h2>
+      <label>เลือกบัญชี: <select id="ledger-account"></select></label>
+      <div id="ledger-view"></div>
+    </section>
+
+    <section id="trial" class="tab">
+      <h2>งบทดลอง (Trial Balance)</h2>
+      <div id="trial-view"></div>
+    </section>
+
+    <section id="worksheet" class="tab">
+      <h2>กระดาษทำการ</h2>
+      <div id="worksheet-view"></div>
+    </section>
+
+    <section id="customers" class="tab">
+      <h2>รายชื่อลูกค้า</h2>
+      <form id="customer-form" class="card">
+        <input type="text" id="cust-code" placeholder="รหัสลูกค้า" required>
+        <input type="text" id="cust-name" placeholder="ชื่อลูกค้า/บริษัท" required>
+        <input type="text" id="cust-phone" placeholder="โทรศัพท์">
+        <input type="text" id="cust-tax" placeholder="เลขผู้เสียภาษี">
+        <input type="text" id="cust-address" placeholder="ที่อยู่">
+        <button type="submit" id="cust-submit">เพิ่มลูกค้า</button>
+        <button type="button" id="cust-cancel" class="secondary" hidden>ยกเลิก</button>
+      </form>
+      <table id="customers-table">
+        <thead><tr><th>รหัส</th><th>ชื่อ</th><th>โทรศัพท์</th><th>เลขผู้เสียภาษี</th><th>ที่อยู่</th><th>จัดการ</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3>รายชื่อจากไฟล์ (ชื่อลูกค้า)</h3>
+      <form id="cname-form" class="card inline-form">
+        <input type="text" id="cname-input" placeholder="ชื่อลูกค้า" required>
+        <button type="submit" id="cname-submit">เพิ่มชื่อ</button>
+        <button type="button" id="cname-cancel" class="secondary" hidden>ยกเลิก</button>
+      </form>
+      <table id="customer-names-table">
+        <thead><tr><th>ชื่อลูกค้า</th><th>จัดการ</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div id="import-files-customer_names" class="import-files"></div>
+    </section>
+
+    <section id="customer-costs" class="tab">
+      <h2>รายชื่อลูกค้าพร้อมต้นทุน</h2>
+      <div id="import-files-customer_costs" class="import-files"></div>
+      <div class="table-wrap">
+        <table id="customer-costs-table">
+          <thead><tr><th>วันที่</th><th>ชื่อลูกค้า</th><th class="right">ราคาทุน</th><th class="right">ราคาขาย</th><th>จัดการ</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="incoming-docs" class="tab">
+      <h2>เอกสารรับเข้า</h2>
+      <div id="import-files-incoming_docs" class="import-files"></div>
+      <div class="table-wrap">
+        <table id="incoming-docs-table">
+          <thead><tr><th>วันที่</th><th>ประเภทเอกสาร</th><th>ซัพพลายเออร์</th><th class="right">ยอดรวม</th><th class="right">ส่วนลด</th><th>รูปแบบการชำระเงิน</th><th>จัดการ</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="receivables" class="tab">
+      <h2>ลูกหนี้</h2>
+      <form id="receivable-form" class="card">
+        <label>ลูกค้า <select id="ar-customer" required></select></label>
+        <label>เลขที่เอกสาร <input type="text" id="ar-doc" placeholder="INV-001" required></label>
+        <label>วันที่ <input type="date" id="ar-date" required></label>
+        <label>ครบกำหนด <input type="date" id="ar-due"></label>
+        <label>จำนวนเงิน <input type="number" id="ar-amount" min="0" step="0.01" required></label>
+        <label>รับชำระแล้ว <input type="number" id="ar-paid" min="0" step="0.01" value="0"></label>
+        <label>หมายเหตุ <input type="text" id="ar-note" placeholder="หมายเหตุ"></label>
+        <button type="submit" id="ar-submit">เพิ่มลูกหนี้</button>
+        <button type="button" id="ar-cancel" class="secondary" hidden>ยกเลิก</button>
+      </form>
+      <div id="receivables-summary" class="cards"></div>
+      <table id="receivables-table">
+        <thead><tr><th>ลูกค้า</th><th>เลขที่</th><th>วันที่</th><th>ครบกำหนด</th><th class="right">จำนวนเงิน</th><th class="right">ชำระแล้ว</th><th class="right">คงค้าง</th><th>สถานะ</th><th>จัดการ</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="autodesc" class="tab">
+      <h2>คำอธิบายอัตโนมัติ</h2>
+      <p class="muted">กำหนดคำสำคัญเพื่อแนะนำคำอธิบายรายการอัตโนมัติเมื่อบันทึกรายการ</p>
+      <form id="autodesc-form" class="card">
+        <input type="text" id="ad-keyword" placeholder="คำสำคัญ (เช่น ค่าไฟ, ขายสินค้า)" required>
+        <input type="text" id="ad-text" placeholder="คำอธิบายที่ต้องการให้เติม" required>
+        <button type="submit" id="ad-submit">เพิ่มกฎ</button>
+        <button type="button" id="ad-cancel" class="secondary" hidden>ยกเลิก</button>
+      </form>
+      <table id="autodesc-table">
+        <thead><tr><th>คำสำคัญ</th><th>คำอธิบาย</th><th>จัดการ</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="import" class="tab">
+      <h2>นำเข้าข้อมูลผ่านไฟล์ Excel</h2>
+      <div class="card stack">
+        <label>ประเภทเอกสาร
+          <select id="import-type">
+            <option value="customer_names">รายชื่อลูกค้า (คอลัมน์: ชื่อลูกค้า)</option>
+            <option value="customer_costs">รายชื่อลูกค้าพร้อมต้นทุน (คอลัมน์: วันที่, ชื่อลูกค้า, ราคาทุน, ราคาขาย)</option>
+            <option value="incoming_docs">เอกสารรับเข้า (คอลัมน์: วันที่, ประเภทเอกสาร, ซัพพลายเออร์, ยอดรวม, ส่วนลด, รูปแบบการชำระเงิน)</option>
+          </select>
+        </label>
+        <label>ไฟล์ Excel <input type="file" id="import-file" accept=".xlsx,.xls,.csv"></label>
+        <div class="row actions">
+          <button type="button" id="import-preview" class="secondary">ดูตัวอย่าง</button>
+          <button type="button" id="import-run">นำเข้าข้อมูล</button>
+        </div>
+        <p id="import-msg" class="muted"></p>
+      </div>
+      <div id="import-preview-view"></div>
+      <h3>ไฟล์ที่นำเข้าแล้ว</h3>
+      <div id="import-files-all" class="import-files"></div>
+    </section>
+
+    <section id="settings" class="tab">
+      <h2>ตั้งค่า</h2>
+      <form id="settings-form" class="settings-grid">
+        <div class="card stack">
+          <h3>ข้อมูลกิจการ</h3>
+          <label>ชื่อกิจการ/บริษัท <input type="text" id="set-company" placeholder="ระบุชื่อกิจการ"></label>
+          <label>สกุลเงิน <input type="text" id="set-currency" placeholder="THB"></label>
+          <label>หมายเหตุ <textarea id="set-note" rows="3" placeholder="หมายเหตุเพิ่มเติม"></textarea></label>
+        </div>
+        <div class="card stack">
+          <h3>งวดบัญชี</h3>
+          <label>วันที่เริ่มต้นงวด <input type="date" id="set-period-start"></label>
+          <label>วันที่สิ้นสุดงวด <input type="date" id="set-period-end"></label>
+          <div class="settings-actions">
+            <button type="submit">บันทึกการตั้งค่า</button>
+          </div>
+        </div>
+      </form>
+      <div class="card settings-info">
+        <h3>ข้อมูลระบบ</h3>
+        <p class="muted">ข้อมูลทั้งหมดจัดเก็บใน Firebase Firestore (เอกสาร <code>accounting/main</code>) รวมถึงหมวดหมู่บัญชี รายการบันทึก ลูกค้า ลูกหนี้ คำอธิบายอัตโนมัติ เอกสารนำเข้า และการตั้งค่า</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="status" class="note">กำลังเชื่อมต่อ Firebase...</span>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
