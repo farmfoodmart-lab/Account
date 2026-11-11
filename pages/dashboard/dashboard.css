@@ -1,0 +1,3 @@
+@import url("../shared.css");
+
+#dashboard-view > .card { margin-top: 16px; }

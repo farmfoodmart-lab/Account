@@ -1,0 +1,9 @@
+@import url("../shared.css");
+
+#import-dropzone { display:flex; align-items:center; gap:14px; padding:24px; border:2px dashed var(--border); border-radius:var(--radius); cursor:pointer; }
+#import-dropzone.is-dragover,#import-dropzone.has-file { border-color:var(--accent); background:rgba(109,92,232,.08); }
+.file-input { display:none; }
+.file-drop-copy { display:flex; flex:1; flex-direction:column; color:var(--muted); }
+.file-drop-copy strong { color:var(--text); }
+.file-drop-icon { color:var(--accent); font-size:1.6rem; }
+.file-drop-browse { color:var(--accent); font-weight:600; }

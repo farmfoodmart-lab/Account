@@ -1,0 +1,4 @@
+@import url("../shared.css");
+
+.inline-form { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.inline-form input { flex:1; min-width:180px; }

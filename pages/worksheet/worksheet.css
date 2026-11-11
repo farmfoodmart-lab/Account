@@ -1,0 +1,4 @@
+@import url("../shared.css");
+
+#worksheet-view { overflow-x:auto; }
+#worksheet-view table { min-width:1120px; }

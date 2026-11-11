@@ -1,0 +1,3 @@
+@import url("../shared.css");
+
+#auto-description-form select { min-width:180px; }

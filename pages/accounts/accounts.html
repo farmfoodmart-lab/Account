@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>หมวดหมู่บัญชี · ระบบบัญชีคู่</title>
+  <link rel="stylesheet" href="../../assets/tailwind.css">
+  <link rel="stylesheet" href="accounts.css">
+</head>
+<body class="min-h-screen animate-page-enter">
+  <header class="relative z-10 shadow-sm">
+    <h1>ระบบบัญชีคู่</h1>
+    <button type="button" id="theme-toggle" class="theme-toggle transition-all duration-200 hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:transition-none motion-reduce:hover:scale-100" aria-pressed="false">
+      <span id="theme-toggle-icon" aria-hidden="true">☾</span>
+      <span id="theme-toggle-label">โหมดมืด</span>
+    </button>
+    <nav id="main-nav" class="flex flex-wrap gap-1" aria-label="เมนูหลัก">
+      <a href="../dashboard/dashboard.html">แดชบอร์ด</a>
+      <a href="../settings/settings.html">ตั้งค่า</a>
+      <a href="../import/import.html">นำเข้า Excel</a>
+      <a href="../customers/customers.html">รายชื่อลูกค้า</a>
+      <a href="../customer-costs/customer-costs.html">ต้นทุน/ขายลูกค้า</a>
+      <a href="../incoming-docs/incoming-docs.html">เอกสารรับเข้า</a>
+      <a href="../autodesc/autodesc.html">คำอธิบายอัตโนมัติ</a>
+      <a href="../accounts/accounts.html" class="active" aria-current="page">หมวดหมู่บัญชี</a>
+      <a href="../receivables/receivables.html">ลูกหนี้</a>
+      <a href="../journal/journal.html">บันทึกรายการ</a>
+      <a href="../ledger/ledger.html">บัญชีแยกประเภท</a>
+      <a href="../trial/trial.html">งบทดลอง</a>
+      <a href="../worksheet/worksheet.html">กระดาษทำการ</a>
+      <a href="../reports/reports.html">รายงานการเงิน</a>
+    </nav>
+  </header>
+
+  <main class="mx-auto w-full max-w-7xl px-4 py-8">
+    <h2 class="mb-6 text-2xl font-bold tracking-tight">หมวดหมู่บัญชี</h2>
+    <form id="account-form" class="card">
+      <input type="text" id="account-code" placeholder="รหัสบัญชี (เช่น 101)" required>
+      <input type="text" id="account-name" placeholder="ชื่อบัญชี" required>
+      <select id="account-type" required>
+        <option value="">-- ประเภท --</option>
+        <option value="asset">สินทรัพย์ (Asset)</option>
+        <option value="liability">หนี้สิน (Liability)</option>
+        <option value="equity">ทุน (Equity)</option>
+        <option value="revenue">รายได้ (Revenue)</option>
+        <option value="expense">ค่าใช้จ่าย (Expense)</option>
+      </select>
+      <button type="submit" id="account-submit">เพิ่มบัญชี</button>
+      <button type="button" id="account-cancel" class="secondary" hidden>ยกเลิก</button>
+    </form>
+    <div class="table-wrap">
+      <table id="accounts-table">
+        <thead><tr><th>รหัส</th><th>ชื่อ</th><th>ประเภท</th><th>จัดการ</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <footer><span id="status" class="note">กำลังเชื่อมต่อ Firebase...</span></footer>
+  <script src="../../js/theme.js"></script>
+  <script type="module" src="accounts.js"></script>
+</body>
+</html>

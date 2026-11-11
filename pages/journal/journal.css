@@ -1,0 +1,4 @@
+@import url("../shared.css");
+
+.journal-saved { margin-top:24px; }
+.journal-saved .filter-bar { margin-top:0; }
