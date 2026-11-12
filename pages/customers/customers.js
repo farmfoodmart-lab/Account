@@ -1,4 +1,4 @@
-import { esc, load, replaceState, save, state, uid } from "../../js/data.js";
+import { esc, load, onDataRefresh, replaceState, save, state, uid } from "../../js/data.js";
 import { confirmAction, toast, toastError, toastSuccess } from "../../js/ui.js";
 import { renderImportedFiles } from "../imported-files.js";
 
@@ -182,4 +182,9 @@ if (await load(["customers", "receivables", "customerNames"])) {
   renderCustomers();
   renderCustomerNames();
   renderImportedFiles("customer-name-import-files", "customer_names", renderCustomerNames);
+  onDataRefresh(() => {
+    renderCustomers();
+    renderCustomerNames();
+    renderImportedFiles("customer-name-import-files", "customer_names", renderCustomerNames);
+  });
 }

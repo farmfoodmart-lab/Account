@@ -1,53 +1,71 @@
 <!DOCTYPE html>
 <html lang="th">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ตั้งค่า · ระบบบัญชีคู่</title><link rel="stylesheet" href="../../assets/tailwind.css">
-  <link rel="stylesheet" href="settings.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>การตั้งค่า · ระบบบัญชีคู่</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="modulepreload" href="../../js/data.js">
+  <script src="../../js/theme.js"></script>
 </head>
-<body class="min-h-screen animate-page-enter">
-  <header class="relative z-10 shadow-sm">
-    <h1>ระบบบัญชีคู่</h1><button type="button" id="theme-toggle" class="theme-toggle transition-all duration-200 hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:transition-none motion-reduce:hover:scale-100" aria-pressed="false"><span id="theme-toggle-icon" aria-hidden="true">☾</span><span id="theme-toggle-label">โหมดมืด</span></button>
-    <nav id="main-nav" class="flex flex-wrap gap-1" aria-label="เมนูหลัก">
-      <a href="../dashboard/dashboard.html">แดชบอร์ด</a>
-      <a href="../settings/settings.html" class="active" aria-current="page">ตั้งค่า</a>
-      <a href="../import/import.html">นำเข้า Excel</a>
-      <a href="../customers/customers.html">รายชื่อลูกค้า</a>
-      <a href="../customer-costs/customer-costs.html">ต้นทุน/ขายลูกค้า</a>
-      <a href="../incoming-docs/incoming-docs.html">เอกสารรับเข้า</a>
-      <a href="../autodesc/autodesc.html">คำอธิบายอัตโนมัติ</a>
-      <a href="../accounts/accounts.html">หมวดหมู่บัญชี</a>
-      <a href="../receivables/receivables.html">ลูกหนี้</a>
-      <a href="../journal/journal.html">บันทึกรายการ</a>
-      <a href="../ledger/ledger.html">บัญชีแยกประเภท</a>
-      <a href="../trial/trial.html">งบทดลอง</a>
-      <a href="../worksheet/worksheet.html">กระดาษทำการ</a>
-      <a href="../reports/reports.html">รายงานการเงิน</a>
-    </nav>
-  </header>
-  <main class="mx-auto w-full max-w-7xl px-4 py-8">
-    <h2 class="mb-6 text-2xl font-bold tracking-tight">ตั้งค่า</h2>
-    <form id="settings-form" class="settings-grid">
-      <div class="card stack"><h3>ข้อมูลกิจการ</h3>
-        <label>ชื่อกิจการ/บริษัท <input type="text" id="settings-company" placeholder="ระบุชื่อกิจการ"></label>
-        <label>สกุลเงิน <input type="text" id="settings-currency" placeholder="THB"></label>
-        <label>หมายเหตุ <textarea id="settings-note" rows="3" placeholder="หมายเหตุเพิ่มเติม"></textarea></label>
+<body>
+  <script src="../../js/shell.js"></script>
+  <main id="main">
+    <div class="page-head">
+      <div><h2>การตั้งค่า</h2><p class="page-sub">ข้อมูลกิจการ งวดบัญชี การปิดบัญชี บัญชีสำหรับลงบัญชีอัตโนมัติ และการสำรองข้อมูล</p></div>
+    </div>
+    <form id="settings-form">
+      <div class="settings-grid">
+        <div class="card stack"><h3>ข้อมูลกิจการ</h3>
+          <label class="field"><span>ชื่อกิจการ / บริษัท</span><input type="text" id="settings-company" placeholder="ระบุชื่อกิจการ"></label>
+          <label class="field"><span>เลขประจำตัวผู้เสียภาษี</span><input type="text" id="settings-tax-id" inputmode="numeric" placeholder="13 หลัก"></label>
+          <label class="field"><span>สกุลเงิน</span><input type="text" id="settings-currency" placeholder="THB"></label>
+          <label class="field"><span>หมายเหตุ</span><textarea id="settings-note" rows="2" placeholder="หมายเหตุเพิ่มเติม"></textarea></label>
+        </div>
+        <div class="card stack"><h3>งวดบัญชี</h3>
+          <p class="muted">ใช้เป็นช่วงเวลาเริ่มต้นของแดชบอร์ด และตัวเลือก “งวดบัญชี” ในหน้างบการเงิน</p>
+          <label class="field"><span>วันที่เริ่มต้นงวด</span><input type="date" id="settings-period-start"></label>
+          <label class="field"><span>วันที่สิ้นสุดงวด</span><input type="date" id="settings-period-end"></label>
+          <label class="field"><span>อัตรา VAT เริ่มต้น (%)</span><input type="number" id="settings-vat-rate" min="0" max="100" step="0.01"></label>
+        </div>
       </div>
-      <div class="card stack"><h3>งวดบัญชี</h3>
-        <label>วันที่เริ่มต้นงวด <input type="date" id="settings-period-start"></label>
-        <label>วันที่สิ้นสุดงวด <input type="date" id="settings-period-end"></label>
-        <div class="settings-actions"><button type="submit">บันทึกการตั้งค่า</button></div>
+      <div class="card"><div class="card-head"><h3>บัญชีสำหรับลงบัญชีอัตโนมัติ</h3><span class="muted">ใช้กับลูกหนี้ เจ้าหนี้ ภาษี และการปิดบัญชี · เว้นว่างเพื่อให้ระบบเลือกจากรหัสมาตรฐาน</span></div>
+        <div class="form-grid" id="settings-account-map"></div>
       </div>
+      <div class="form-actions" style="margin:0 0 18px"><button type="submit">บันทึกการตั้งค่า</button></div>
     </form>
+
+    <div class="card" id="close-card">
+      <div class="card-head"><h3>ปิดงวดบัญชี</h3><span id="lock-status"></span></div>
+      <div class="grid-2">
+        <div class="stack">
+          <h4>1. สร้างรายการปิดบัญชี</h4>
+          <p class="muted">โอนยอดรายได้และค่าใช้จ่ายทั้งหมด ณ วันสิ้นงวดเข้าบัญชีกำไรสะสม (รายการประเภท “ปิดบัญชี”)</p>
+          <label class="field" style="max-width:240px"><span>ปิดบัญชี ณ วันที่</span><input type="date" id="close-date"></label>
+          <div id="close-preview" class="muted"></div>
+          <label class="check-field"><input type="checkbox" id="close-lock" checked> <span>ล็อกงวดถึงวันที่นี้หลังปิดบัญชี</span></label>
+          <div><button type="button" id="close-run">สร้างรายการปิดบัญชี</button></div>
+        </div>
+        <div class="stack">
+          <h4>2. ล็อกงวดบัญชี</h4>
+          <p class="muted">รายการที่ลงวันที่ถึงวันล็อกจะแก้ไข ลบ หรือเพิ่มไม่ได้ ป้องกันตัวเลขในงบที่ปิดแล้วเปลี่ยน</p>
+          <label class="field" style="max-width:240px"><span>ล็อกรายการถึงวันที่</span><input type="date" id="lock-date"></label>
+          <div class="backup-actions"><button type="button" id="lock-save" class="secondary">บันทึกวันล็อก</button><button type="button" id="lock-clear" class="ghost">ปลดล็อก</button></div>
+        </div>
+      </div>
+    </div>
+
     <div class="card stack backup-card">
-      <h3>สำรอง / กู้คืนข้อมูล</h3><p class="muted">ดาวน์โหลดข้อมูลทั้งหมดเป็นไฟล์ JSON เก็บไว้ หรือกู้คืนจากไฟล์สำรอง (จะเขียนทับข้อมูลปัจจุบัน)</p>
-      <div class="row actions backup-actions"><button type="button" id="backup-export" class="secondary">ดาวน์โหลดสำรองข้อมูล</button>
+      <h3>สำรอง / กู้คืนข้อมูล</h3><p class="muted">ดาวน์โหลดข้อมูลทั้งหมดเป็นไฟล์ JSON เก็บไว้ หรือกู้คืนจากไฟล์สำรอง (จะเขียนทับข้อมูลปัจจุบันทั้งหมด)</p>
+      <div class="backup-actions"><button type="button" id="backup-export" class="secondary">ดาวน์โหลดไฟล์สำรอง</button>
         <label class="file-button">กู้คืนจากไฟล์<input type="file" id="backup-import" accept=".json,application/json"></label></div>
       <p id="backup-msg" class="muted"></p>
     </div>
-    <div class="card settings-info"><h3>ข้อมูลระบบ</h3><p class="muted">ข้อมูลจัดเก็บใน Firebase Firestore และแยกเอกสารตามหมวดข้อมูล</p></div>
+    <div class="card settings-info"><div class="card-head"><h3>ข้อมูลระบบ</h3><span class="muted" id="settings-user"></span></div><p class="muted" style="margin-bottom:12px">ข้อมูลจัดเก็บใน Firebase Firestore และเก็บสำเนาไว้ในเครื่องเพื่อให้เปิดหน้าได้ทันที</p><div id="settings-stats" class="kv"></div></div>
   </main>
-  <div id="toasts" class="toasts" aria-live="polite"></div><footer><span id="status" class="note">กำลังเชื่อมต่อ Firebase...</span></footer>
-  <script src="../../js/theme.js"></script><script type="module" src="settings.js"></script>
+  <script type="module" src="settings.js"></script>
 </body>
 </html>

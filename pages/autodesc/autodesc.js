@@ -7,7 +7,7 @@ import {
   replaceState,
   save,
   state,
-  uid,
+  uid, onDataRefresh
 } from "../../js/data.js";
 import { confirmAction, toast, toastError, toastSuccess } from "../../js/ui.js";
 
@@ -158,4 +158,7 @@ autoDescriptionForm.addEventListener("submit", async (event) => {
   toastSuccess(isEdit ? "แก้ไขคำอธิบายอัตโนมัติเรียบร้อย" : "เพิ่มคำอธิบายอัตโนมัติเรียบร้อย");
 });
 
-if (await load(["autoDesc", "accounts", "customers", "customerNames"])) renderAutoDesc();
+if (await load(["autoDesc", "accounts", "customers", "customerNames"])) {
+  renderAutoDesc();
+  onDataRefresh(renderAutoDesc);
+}

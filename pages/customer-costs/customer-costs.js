@@ -1,4 +1,4 @@
-import { esc, fmt, fmtDateDMY, load, replaceState, save, state } from "../../js/data.js";
+import { esc, fmt, fmtDateDMY, load, onDataRefresh, replaceState, save, state } from "../../js/data.js";
 import { confirmAction, toastError, toastSuccess } from "../../js/ui.js";
 import { renderImportedFiles } from "../imported-files.js";
 
@@ -34,4 +34,5 @@ function renderCustomerCosts() {
 if (await load(["customerCosts"])) {
   renderCustomerCosts();
   renderImportedFiles("customer-cost-import-files", "customer_costs", renderCustomerCosts);
+  onDataRefresh(renderCustomerCosts);
 }

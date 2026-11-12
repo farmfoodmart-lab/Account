@@ -1,42 +1,49 @@
 <!DOCTYPE html>
 <html lang="th">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ลูกหนี้ · ระบบบัญชีคู่</title><link rel="stylesheet" href="../../assets/tailwind.css">
-  <link rel="stylesheet" href="receivables.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ลูกหนี้ · ระบบบัญชีคู่</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="modulepreload" href="../../js/data.js">
+  <script src="../../js/theme.js"></script>
 </head>
-<body class="min-h-screen animate-page-enter">
-  <header class="relative z-10 shadow-sm">
-    <h1>ระบบบัญชีคู่</h1><button type="button" id="theme-toggle" class="theme-toggle transition-all duration-200 hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:transition-none motion-reduce:hover:scale-100" aria-pressed="false"><span id="theme-toggle-icon" aria-hidden="true">☾</span><span id="theme-toggle-label">โหมดมืด</span></button>
-    <nav id="main-nav" class="flex flex-wrap gap-1" aria-label="เมนูหลัก">
-      <a href="../dashboard/dashboard.html">แดชบอร์ด</a>
-      <a href="../settings/settings.html">ตั้งค่า</a>
-      <a href="../import/import.html">นำเข้า Excel</a>
-      <a href="../customers/customers.html">รายชื่อลูกค้า</a>
-      <a href="../customer-costs/customer-costs.html">ต้นทุน/ขายลูกค้า</a>
-      <a href="../incoming-docs/incoming-docs.html">เอกสารรับเข้า</a>
-      <a href="../autodesc/autodesc.html">คำอธิบายอัตโนมัติ</a>
-      <a href="../accounts/accounts.html">หมวดหมู่บัญชี</a>
-      <a href="../receivables/receivables.html" class="active" aria-current="page">ลูกหนี้</a>
-      <a href="../journal/journal.html">บันทึกรายการ</a>
-      <a href="../ledger/ledger.html">บัญชีแยกประเภท</a>
-      <a href="../trial/trial.html">งบทดลอง</a>
-      <a href="../worksheet/worksheet.html">กระดาษทำการ</a>
-      <a href="../reports/reports.html">รายงานการเงิน</a>
-    </nav>
-  </header>
-  <main class="mx-auto w-full max-w-7xl px-4 py-8">
-    <h2 class="mb-6 text-2xl font-bold tracking-tight">ลูกหนี้</h2>
-    <form id="receivable-form" class="card">
-      <label>ลูกค้า <select id="receivable-customer" required></select></label><label>เลขที่เอกสาร <input type="text" id="receivable-document-number" placeholder="INV-001" required></label>
-      <label>วันที่ <input type="date" id="receivable-date" required></label><label>ครบกำหนด <input type="date" id="receivable-due-date"></label>
-      <label>จำนวนเงิน <input type="number" id="receivable-amount" min="0" step="0.01" required></label><label>รับชำระแล้ว <input type="number" id="receivable-paid" min="0" step="0.01" value="0"></label>
-      <label>หมายเหตุ <input type="text" id="receivable-note" placeholder="หมายเหตุ"></label><button type="submit" id="receivable-submit">เพิ่มลูกหนี้</button><button type="button" id="receivable-cancel" class="secondary" hidden>ยกเลิก</button>
+<body>
+  <script src="../../js/shell.js"></script>
+  <main id="main">
+    <div class="page-head">
+      <div><h2>ลูกหนี้</h2><p class="page-sub">ตั้งลูกหนี้จากการขายเชื่อ ติดตามอายุหนี้ และรับชำระ — ลงบัญชีแยกประเภทให้อัตโนมัติ</p></div>
+      <div class="page-actions"><button type="button" id="sl-export" class="secondary">ส่งออก CSV</button></div>
+    </div>
+    <div id="sl-summary" class="cards"></div>
+    <div id="sl-recon"></div>
+    <div id="sl-aging"></div>
+    <form id="sl-form" class="card" autocomplete="off">
+      <div class="form-title"><h3 id="sl-form-title">เพิ่มลูกหนี้</h3><span class="badge warning form-mode">กำลังแก้ไข</span></div>
+      <div class="form-grid">
+        <label class="field span-2"><span class="req">ลูกค้า</span><select id="sl-party" required></select></label>
+        <label class="field"><span>เลขที่เอกสาร</span><input type="text" id="sl-docno" placeholder="สร้างอัตโนมัติ"></label>
+        <label class="field"><span class="req">วันที่</span><input type="date" id="sl-date" required></label>
+        <label class="field"><span>ครบกำหนด</span><input type="date" id="sl-due"></label>
+        <label class="field span-2"><span class="req">บัญชีรายได้</span><select id="sl-counter" required></select></label>
+        <label class="field"><span class="req">จำนวนเงินก่อน VAT</span><input type="number" id="sl-net" min="0" step="0.01" placeholder="0.00" required></label>
+        <label class="field"><span>ภาษีมูลค่าเพิ่ม</span><select id="sl-vat-rate"><option value="0">ไม่มี VAT</option><option value="7">VAT 7%</option></select></label>
+        <label class="field"><span>VAT</span><input type="text" id="sl-vat" readonly tabindex="-1"></label>
+        <label class="field"><span>ยอดรวมทั้งสิ้น</span><input type="text" id="sl-total" readonly tabindex="-1" class="strong-input"></label>
+        <label class="field span-2"><span>หมายเหตุ</span><input type="text" id="sl-note" placeholder="หมายเหตุ"></label>
+      </div>
+      <label class="check-field" style="margin-top:14px"><input type="checkbox" id="sl-post" checked> <span><strong>ลงบัญชีแยกประเภทอัตโนมัติ</strong> <span class="muted" id="sl-post-note"></span></span></label>
+      <div class="form-actions"><button type="button" id="sl-cancel" class="secondary" hidden>ยกเลิก</button><button type="submit" id="sl-submit">เพิ่มลูกหนี้</button></div>
     </form>
-    <div id="receivables-summary" class="cards"></div>
-    <div class="table-wrap"><table id="receivables-table"><thead><tr><th>ลูกค้า</th><th>เลขที่</th><th>วันที่</th><th>ครบกำหนด</th><th class="right">จำนวนเงิน</th><th class="right">ชำระแล้ว</th><th class="right">คงค้าง</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody></tbody></table></div>
+    <div class="filter-bar">
+      <div class="chips" id="sl-status-filter"></div>
+      <label class="grow" style="margin-left:auto;max-width:320px">ค้นหา <input type="search" id="sl-search" placeholder="ลูกค้า / เลขที่ / หมายเหตุ"></label>
+    </div>
+    <div class="table-wrap"><table id="sl-table"><thead><tr><th>ลูกค้า</th><th>เลขที่</th><th class="col-date">วันที่</th><th class="col-date">ครบกำหนด</th><th class="right">ยอดรวม</th><th class="right">รับชำระแล้ว</th><th class="right">คงค้าง</th><th>สถานะ</th><th class="col-act"></th></tr></thead><tbody></tbody></table></div>
   </main>
-  <div id="toasts" class="toasts" aria-live="polite"></div><footer><span id="status" class="note">กำลังเชื่อมต่อ Firebase...</span></footer>
-  <script src="../../js/theme.js"></script><script type="module" src="receivables.js"></script>
+  <script type="module" src="receivables.js"></script>
 </body>
 </html>

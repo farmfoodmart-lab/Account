@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>เจ้าหนี้ · ระบบบัญชีคู่</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="modulepreload" href="../../js/data.js">
+  <script src="../../js/theme.js"></script>
+</head>
+<body>
+  <script src="../../js/shell.js"></script>
+  <main id="main">
+    <div class="page-head">
+      <div><h2>เจ้าหนี้</h2><p class="page-sub">ตั้งเจ้าหนี้จากการซื้อเชื่อ/ค่าใช้จ่ายค้างจ่าย ติดตามกำหนดชำระ และจ่ายชำระ — ลงบัญชีแยกประเภทให้อัตโนมัติ</p></div>
+      <div class="page-actions"><button type="button" id="sl-export" class="secondary">ส่งออก CSV</button></div>
+    </div>
+    <div id="sl-summary" class="cards"></div>
+    <div id="sl-recon"></div>
+    <div id="sl-aging"></div>
+    <form id="sl-form" class="card" autocomplete="off">
+      <div class="form-title"><h3 id="sl-form-title">เพิ่มเจ้าหนี้</h3><span class="badge warning form-mode">กำลังแก้ไข</span></div>
+      <div class="form-grid">
+        <label class="field span-2"><span class="req">ผู้ขาย / ซัพพลายเออร์</span><input type="text" id="sl-party" list="sl-vendors" placeholder="ชื่อผู้ขาย" required><datalist id="sl-vendors"></datalist></label><label class="field"><span>เลขผู้เสียภาษีผู้ขาย</span><input type="text" id="sl-party-tax" inputmode="numeric" placeholder="13 หลัก"></label>
+        <label class="field"><span>เลขที่เอกสาร</span><input type="text" id="sl-docno" placeholder="สร้างอัตโนมัติ"></label>
+        <label class="field"><span class="req">วันที่</span><input type="date" id="sl-date" required></label>
+        <label class="field"><span>ครบกำหนด</span><input type="date" id="sl-due"></label>
+        <label class="field span-2"><span class="req">บัญชีค่าใช้จ่าย / สินทรัพย์ที่ซื้อ</span><select id="sl-counter" required></select></label>
+        <label class="field"><span class="req">จำนวนเงินก่อน VAT</span><input type="number" id="sl-net" min="0" step="0.01" placeholder="0.00" required></label>
+        <label class="field"><span>ภาษีมูลค่าเพิ่ม</span><select id="sl-vat-rate"><option value="0">ไม่มี VAT</option><option value="7">VAT 7%</option></select></label>
+        <label class="field"><span>VAT</span><input type="text" id="sl-vat" readonly tabindex="-1"></label>
+        <label class="field"><span>ยอดรวมทั้งสิ้น</span><input type="text" id="sl-total" readonly tabindex="-1" class="strong-input"></label>
+        <label class="field span-2"><span>หมายเหตุ</span><input type="text" id="sl-note" placeholder="หมายเหตุ"></label>
+      </div>
+      <label class="check-field" style="margin-top:14px"><input type="checkbox" id="sl-post" checked> <span><strong>ลงบัญชีแยกประเภทอัตโนมัติ</strong> <span class="muted" id="sl-post-note"></span></span></label>
+      <div class="form-actions"><button type="button" id="sl-cancel" class="secondary" hidden>ยกเลิก</button><button type="submit" id="sl-submit">เพิ่มเจ้าหนี้</button></div>
+    </form>
+    <div class="filter-bar">
+      <div class="chips" id="sl-status-filter"></div>
+      <label class="grow" style="margin-left:auto;max-width:320px">ค้นหา <input type="search" id="sl-search" placeholder="ผู้ขาย / เลขที่ / หมายเหตุ"></label>
+    </div>
+    <div class="table-wrap"><table id="sl-table"><thead><tr><th>ผู้ขาย</th><th>เลขที่</th><th class="col-date">วันที่</th><th class="col-date">ครบกำหนด</th><th class="right">ยอดรวม</th><th class="right">จ่ายแล้ว</th><th class="right">คงค้าง</th><th>สถานะ</th><th class="col-act"></th></tr></thead><tbody></tbody></table></div>
+  </main>
+  <script type="module" src="payables.js"></script>
+</body>
+</html>

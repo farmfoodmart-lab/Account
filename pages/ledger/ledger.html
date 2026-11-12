@@ -4,40 +4,31 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>บัญชีแยกประเภท · ระบบบัญชีคู่</title>
-  <link rel="stylesheet" href="../../assets/tailwind.css">
-  <link rel="stylesheet" href="ledger.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="modulepreload" href="../../js/data.js">
+  <script src="../../js/theme.js"></script>
 </head>
-<body class="min-h-screen animate-page-enter">
-  <header class="relative z-10 shadow-sm">
-    <h1>ระบบบัญชีคู่</h1>
-    <button type="button" id="theme-toggle" class="theme-toggle transition-all duration-200 hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:transition-none motion-reduce:hover:scale-100" aria-pressed="false"><span id="theme-toggle-icon" aria-hidden="true">☾</span><span id="theme-toggle-label">โหมดมืด</span></button>
-    <nav id="main-nav" class="flex flex-wrap gap-1" aria-label="เมนูหลัก">
-      <a href="../dashboard/dashboard.html">แดชบอร์ด</a>
-      <a href="../settings/settings.html">ตั้งค่า</a>
-      <a href="../import/import.html">นำเข้า Excel</a>
-      <a href="../customers/customers.html">รายชื่อลูกค้า</a>
-      <a href="../customer-costs/customer-costs.html">ต้นทุน/ขายลูกค้า</a>
-      <a href="../incoming-docs/incoming-docs.html">เอกสารรับเข้า</a>
-      <a href="../autodesc/autodesc.html">คำอธิบายอัตโนมัติ</a>
-      <a href="../accounts/accounts.html">หมวดหมู่บัญชี</a>
-      <a href="../receivables/receivables.html">ลูกหนี้</a>
-      <a href="../journal/journal.html">บันทึกรายการ</a>
-      <a href="../ledger/ledger.html" class="active" aria-current="page">บัญชีแยกประเภท</a>
-      <a href="../trial/trial.html">งบทดลอง</a>
-      <a href="../worksheet/worksheet.html">กระดาษทำการ</a>
-      <a href="../reports/reports.html">รายงานการเงิน</a>
-    </nav>
-  </header>
-  <main class="mx-auto w-full max-w-7xl px-4 py-8">
-    <h2 class="mb-6 text-2xl font-bold tracking-tight">บัญชีแยกประเภท (General Ledger)</h2>
-    <div class="ledger-toolbar">
-      <label>กรองหมวดบัญชี <select id="ledger-type"></select></label>
-      <label>กรองบัญชี <select id="ledger-account"></select></label>
-      <span class="muted">เลือกได้ทั้งหมวดและบัญชี</span>
+<body>
+  <script src="../../js/shell.js"></script>
+  <main id="main">
+    <div class="page-head">
+      <div><h2>บัญชีแยกประเภท</h2><p class="page-sub">ความเคลื่อนไหวและยอดคงเหลือสะสมของแต่ละบัญชี คลิกที่บัญชีเพื่อดูรายละเอียด</p></div>
+      <div class="page-actions"><button type="button" id="ledger-toggle-all" class="secondary">ขยายทั้งหมด</button><button type="button" id="ledger-export" class="secondary">ส่งออก CSV</button><button type="button" class="secondary" onclick="window.print()">พิมพ์</button></div>
     </div>
-    <div id="ledger-view"></div>
+    <div class="filter-bar">
+      <label>หมวดบัญชี <select id="ledger-type"></select></label>
+      <label style="min-width:220px">บัญชี <select id="ledger-account"></select></label>
+      <label>ตั้งแต่ <input type="date" id="ledger-from"></label>
+      <label>ถึง <input type="date" id="ledger-to"></label>
+      <label class="grow">ค้นหารายการ <input type="search" id="ledger-search" placeholder="คำอธิบาย / เลขที่เอกสาร"></label>
+      <label class="check"><input type="checkbox" id="ledger-hide-empty" checked> ซ่อนบัญชีที่ไม่มีความเคลื่อนไหว</label>
+    </div>
+    <div id="ledger-summary"></div>
+    <div id="ledger-view"><div class="skeleton"></div></div>
   </main>
-  <div id="toasts" class="toasts" aria-live="polite"></div><footer><span id="status" class="note">กำลังเชื่อมต่อ Firebase...</span></footer>
-  <script src="../../js/theme.js"></script><script type="module" src="ledger.js"></script>
+  <script type="module" src="ledger.js"></script>
 </body>
 </html>

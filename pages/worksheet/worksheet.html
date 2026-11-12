@@ -1,32 +1,29 @@
 <!DOCTYPE html>
 <html lang="th">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>กระดาษทำการ · ระบบบัญชีคู่</title><link rel="stylesheet" href="../../assets/tailwind.css">
-  <link rel="stylesheet" href="worksheet.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>กระดาษทำการ · ระบบบัญชีคู่</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="modulepreload" href="../../js/data.js">
+  <script src="../../js/theme.js"></script>
 </head>
-<body class="min-h-screen animate-page-enter">
-  <header class="relative z-10 shadow-sm">
-    <h1>ระบบบัญชีคู่</h1><button type="button" id="theme-toggle" class="theme-toggle transition-all duration-200 hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:transition-none motion-reduce:hover:scale-100" aria-pressed="false"><span id="theme-toggle-icon" aria-hidden="true">☾</span><span id="theme-toggle-label">โหมดมืด</span></button>
-    <nav id="main-nav" class="flex flex-wrap gap-1" aria-label="เมนูหลัก">
-      <a href="../dashboard/dashboard.html">แดชบอร์ด</a>
-      <a href="../settings/settings.html">ตั้งค่า</a>
-      <a href="../import/import.html">นำเข้า Excel</a>
-      <a href="../customers/customers.html">รายชื่อลูกค้า</a>
-      <a href="../customer-costs/customer-costs.html">ต้นทุน/ขายลูกค้า</a>
-      <a href="../incoming-docs/incoming-docs.html">เอกสารรับเข้า</a>
-      <a href="../autodesc/autodesc.html">คำอธิบายอัตโนมัติ</a>
-      <a href="../accounts/accounts.html">หมวดหมู่บัญชี</a>
-      <a href="../receivables/receivables.html">ลูกหนี้</a>
-      <a href="../journal/journal.html">บันทึกรายการ</a>
-      <a href="../ledger/ledger.html">บัญชีแยกประเภท</a>
-      <a href="../trial/trial.html">งบทดลอง</a>
-      <a href="../worksheet/worksheet.html" class="active" aria-current="page">กระดาษทำการ</a>
-      <a href="../reports/reports.html">รายงานการเงิน</a>
-    </nav>
-  </header>
-  <main class="mx-auto w-full max-w-7xl px-4 py-8"><h2 class="mb-6 text-2xl font-bold tracking-tight">กระดาษทำการ</h2><div id="worksheet-view"></div></main>
-  <div id="toasts" class="toasts" aria-live="polite"></div><footer><span id="status" class="note">กำลังเชื่อมต่อ Firebase...</span></footer>
-  <script src="../../js/theme.js"></script><script type="module" src="worksheet.js"></script>
+<body>
+  <script src="../../js/shell.js"></script>
+  <main id="main">
+    <div class="page-head">
+      <div><h2>กระดาษทำการ</h2><p class="page-sub">งบทดลอง → รายการปรับปรุง → งบทดลองหลังปรับปรุง → งบกำไรขาดทุน และงบแสดงฐานะการเงิน</p></div>
+      <div class="page-actions"><button type="button" id="worksheet-export" class="secondary">ส่งออก CSV</button><button type="button" class="secondary" onclick="window.print()">พิมพ์</button></div>
+    </div>
+    <div class="filter-bar">
+      <label>ณ วันที่ <input type="date" id="worksheet-to"></label>
+      <p class="muted" style="flex:1;min-width:240px">ช่อง “ปรับปรุง” ดึงจากรายการที่บันทึกเป็นประเภท <strong>รายการปรับปรุง</strong> ในสมุดรายวัน · รายการปิดบัญชีจะไม่ถูกนำมาแสดง</p>
+    </div>
+    <div id="worksheet-view"><div class="skeleton"></div></div>
+  </main>
+  <script type="module" src="worksheet.js"></script>
 </body>
 </html>

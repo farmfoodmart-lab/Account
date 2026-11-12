@@ -36,6 +36,12 @@ export function toIsoDate(value) {
   return "";
 }
 
+/** Journal entry kind: "general" (default), "adjusting" or "closing". */
+export function entryKindOf(entry) {
+  const kind = entry && entry.kind;
+  return kind === "adjusting" || kind === "closing" ? kind : "general";
+}
+
 export function inDateRange(date, from = "", to = "") {
   const iso = toIsoDate(date);
   if (!iso) return !from && !to;
@@ -56,11 +62,14 @@ function sumAmounts(rows) {
  * Sum debit/credit movement per account for the entries inside the range.
  * Returns a Map of accountId to { debit, credit }.
  */
-export function collectTotals(entries, { from = "", to = "" } = {}) {
+export function collectTotals(entries, { from = "", to = "", kinds = null, excludeKinds = null } = {}) {
   const totals = new Map();
 
   entries.forEach((entry) => {
     if (!inDateRange(entry.date, from, to)) return;
+    const kind = entryKindOf(entry);
+    if (kinds && !kinds.includes(kind)) return;
+    if (excludeKinds && excludeKinds.includes(kind)) return;
     (entry.lines || []).forEach((line) => {
       if (!line || !line.accountId) return;
       const current = totals.get(line.accountId) || { debit: 0, credit: 0 };
@@ -239,6 +248,7 @@ export function monthlySummary(
   const byKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
 
   entries.forEach((entry) => {
+    if (entryKindOf(entry) === "closing") return;
     const iso = toIsoDate(entry.date);
     if (iso.length < 7) return;
 
@@ -255,4 +265,65 @@ export function monthlySummary(
   });
 
   return buckets;
+}
+
+/**
+ * Receivable aging buckets by days past due at `today` (YYYY-MM-DD).
+ */
+export function receivableAging(receivables, today) {
+  const buckets = [
+    { key: "current", label: "ยังไม่ถึงกำหนด", amount: 0, count: 0 },
+    { key: "d30", label: "เกิน 1-30 วัน", amount: 0, count: 0 },
+    { key: "d60", label: "เกิน 31-60 วัน", amount: 0, count: 0 },
+    { key: "d90", label: "เกิน 61-90 วัน", amount: 0, count: 0 },
+    { key: "d90p", label: "เกิน 90 วัน", amount: 0, count: 0 },
+  ];
+  const todayTime = Date.parse(today);
+  receivables.forEach((receivable) => {
+    const remaining = (Number(receivable.amount) || 0) - (Number(receivable.paid) || 0);
+    if (remaining <= BALANCE_EPSILON) return;
+    const due = toIsoDate(receivable.due);
+    const days = due ? Math.floor((todayTime - Date.parse(due)) / 86400000) : 0;
+    const index = days <= 0 ? 0 : days <= 30 ? 1 : days <= 60 ? 2 : days <= 90 ? 3 : 4;
+    buckets[index].amount += remaining;
+    buckets[index].count += 1;
+  });
+  return buckets;
+}
+
+/**
+ * Integrity checks for the books. Returns counts the dashboard can surface.
+ */
+export function bookHealth(accounts, entries, { periodStart = "", periodEnd = "" } = {}) {
+  const accountIds = new Set(accounts.map((account) => account.id));
+  let unbalanced = 0;
+  let missingAccount = 0;
+  let missingDate = 0;
+  let outsidePeriod = 0;
+  let totalDebit = 0;
+  let totalCredit = 0;
+  entries.forEach((entry) => {
+    let debit = 0;
+    let credit = 0;
+    (entry.lines || []).forEach((line) => {
+      debit += Number(line.debit) || 0;
+      credit += Number(line.credit) || 0;
+      if (!accountIds.has(line.accountId)) missingAccount += 1;
+    });
+    totalDebit += debit;
+    totalCredit += credit;
+    if (Math.abs(debit - credit) >= BALANCE_EPSILON) unbalanced += 1;
+    const iso = toIsoDate(entry.date);
+    if (!iso) missingDate += 1;
+    else if ((periodStart && iso < periodStart) || (periodEnd && iso > periodEnd)) outsidePeriod += 1;
+  });
+  return {
+    unbalanced,
+    missingAccount,
+    missingDate,
+    outsidePeriod,
+    totalDebit,
+    totalCredit,
+    isBalanced: Math.abs(totalDebit - totalCredit) < BALANCE_EPSILON,
+  };
 }

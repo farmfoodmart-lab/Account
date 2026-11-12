@@ -1,4 +1,4 @@
-import { esc, fmt, fmtDateDMY, load, replaceState, save, state } from "../../js/data.js";
+import { esc, fmt, fmtDateDMY, load, onDataRefresh, replaceState, save, state } from "../../js/data.js";
 import { confirmAction, toastSuccess } from "../../js/ui.js";
 import { renderImportedFiles } from "../imported-files.js";
 
@@ -34,4 +34,5 @@ function renderIncomingDocs() {
 if (await load(["incomingDocs"])) {
   renderIncomingDocs();
   renderImportedFiles("incoming-document-import-files", "incoming_docs", renderIncomingDocs);
+  onDataRefresh(renderIncomingDocs);
 }

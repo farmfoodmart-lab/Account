@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>รายงานภาษีซื้อ-ขาย · ระบบบัญชีคู่</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="modulepreload" href="../../js/data.js">
+  <script src="../../js/theme.js"></script>
+</head>
+<body>
+  <script src="../../js/shell.js"></script>
+  <main id="main">
+    <div class="page-head">
+      <div><h2>รายงานภาษีซื้อ-ภาษีขาย</h2><p class="page-sub">สรุปภาษีมูลค่าเพิ่มรายเดือนจากบัญชีภาษีขาย/ภาษีซื้อ และรายละเอียดเอกสารสำหรับยื่น ภ.พ.30</p></div>
+      <div class="page-actions"><button type="button" id="vat-export" class="secondary">ส่งออก CSV</button><button type="button" class="secondary" onclick="window.print()">พิมพ์</button></div>
+    </div>
+    <div class="filter-bar">
+      <label>ปี <select id="vat-year"></select></label>
+      <label>เดือน <select id="vat-month"></select></label>
+    </div>
+    <div id="vat-view"><div class="skeleton"></div></div>
+  </main>
+  <script type="module" src="vat.js"></script>
+</body>
+</html>

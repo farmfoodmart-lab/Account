@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>เข้าสู่ระบบ · ระบบบัญชีคู่</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="modulepreload" href="../../js/data.js">
+  <script src="../../js/theme.js"></script>
+</head>
+<body class="auth-page">
+  <main id="main">
+    <div class="login-card card">
+      <div class="brand" style="margin-bottom:18px"><span class="brand-mark">฿</span><span class="brand-text"><strong>ระบบบัญชีคู่</strong><small>Double-entry Accounting</small></span></div>
+      <h2 id="login-title">เข้าสู่ระบบ</h2>
+      <p class="page-sub" id="login-sub">ใช้อีเมลและรหัสผ่านที่ลงทะเบียนไว้</p>
+      <form id="login-form" class="stack" style="margin-top:18px" autocomplete="on">
+        <label class="field"><span>อีเมล</span><input type="email" id="login-email" autocomplete="username" required></label>
+        <label class="field"><span>รหัสผ่าน</span><input type="password" id="login-password" autocomplete="current-password" minlength="6" required></label>
+        <p id="login-error" class="error" role="alert"></p>
+        <button type="submit" id="login-submit">เข้าสู่ระบบ</button>
+      </form>
+      <div class="login-links"><button type="button" class="link-btn" id="login-toggle">ยังไม่มีบัญชี? สร้างบัญชีผู้ใช้</button><button type="button" class="link-btn" id="login-reset">ลืมรหัสผ่าน</button></div>
+      <div id="login-help" class="banner warn" hidden style="margin-top:16px"></div>
+    </div>
+  </main>
+  <script type="module" src="login.js"></script>
+</body>
+</html>

@@ -1,48 +1,40 @@
 <!DOCTYPE html>
 <html lang="th">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>นำเข้าข้อมูล · ระบบบัญชีคู่</title><link rel="stylesheet" href="../../assets/tailwind.css">
-  <link rel="stylesheet" href="import.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>นำเข้าไฟล์ Excel · ระบบบัญชีคู่</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="modulepreload" href="../../js/data.js">
+  <script src="../../js/theme.js"></script>
 </head>
-<body class="min-h-screen animate-page-enter">
-  <header class="relative z-10 shadow-sm">
-    <h1>ระบบบัญชีคู่</h1><button type="button" id="theme-toggle" class="theme-toggle transition-all duration-200 hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:transition-none motion-reduce:hover:scale-100" aria-pressed="false"><span id="theme-toggle-icon" aria-hidden="true">☾</span><span id="theme-toggle-label">โหมดมืด</span></button>
-    <nav id="main-nav" class="flex flex-wrap gap-1" aria-label="เมนูหลัก">
-      <a href="../dashboard/dashboard.html">แดชบอร์ด</a>
-      <a href="../settings/settings.html">ตั้งค่า</a>
-      <a href="../import/import.html" class="active" aria-current="page">นำเข้า Excel</a>
-      <a href="../customers/customers.html">รายชื่อลูกค้า</a>
-      <a href="../customer-costs/customer-costs.html">ต้นทุน/ขายลูกค้า</a>
-      <a href="../incoming-docs/incoming-docs.html">เอกสารรับเข้า</a>
-      <a href="../autodesc/autodesc.html">คำอธิบายอัตโนมัติ</a>
-      <a href="../accounts/accounts.html">หมวดหมู่บัญชี</a>
-      <a href="../receivables/receivables.html">ลูกหนี้</a>
-      <a href="../journal/journal.html">บันทึกรายการ</a>
-      <a href="../ledger/ledger.html">บัญชีแยกประเภท</a>
-      <a href="../trial/trial.html">งบทดลอง</a>
-      <a href="../worksheet/worksheet.html">กระดาษทำการ</a>
-      <a href="../reports/reports.html">รายงานการเงิน</a>
-    </nav>
-  </header>
-  <main class="mx-auto w-full max-w-7xl px-4 py-8">
-    <h2 class="mb-6 text-2xl font-bold tracking-tight">นำเข้าข้อมูลผ่านไฟล์ Excel</h2>
+<body>
+  <script src="../../js/shell.js"></script>
+  <main id="main">
+    <div class="page-head">
+      <div><h2>นำเข้าข้อมูลจากไฟล์ Excel</h2><p class="page-sub">นำเข้าผังบัญชี ลูกค้า ลูกหนี้ รายการบัญชี และเอกสารอื่น ๆ ครั้งละหลายรายการ</p></div>
+    </div>
+    <ol class="steps"><li>เลือกประเภทข้อมูลที่จะนำเข้า</li><li>ลากไฟล์ .xlsx / .xls / .csv มาวาง</li><li>กด “ดูตัวอย่าง” ตรวจสอบคอลัมน์</li><li>กด “นำเข้าข้อมูล”</li></ol>
     <div class="card stack">
-      <label>ประเภทเอกสาร<select id="import-type">
+      <label class="field" style="max-width:360px"><span>ประเภทข้อมูล</span><select id="import-type">
         <option value="customer_names">รายชื่อลูกค้า</option><option value="customer_costs">รายชื่อลูกค้าพร้อมต้นทุน</option><option value="incoming_docs">เอกสารรับเข้า</option>
-        <option value="accounts">หมวดหมู่บัญชี</option><option value="customers">รายชื่อลูกค้าเต็มรูปแบบ</option><option value="receivables">ลูกหนี้</option><option value="journal">รายการบัญชี</option>
+        <option value="accounts">หมวดหมู่บัญชี (ผังบัญชี)</option><option value="customers">รายชื่อลูกค้าเต็มรูปแบบ</option><option value="receivables">ลูกหนี้</option><option value="journal">รายการบัญชี</option>
       </select></label>
       <div id="import-dropzone" class="file-dropzone" role="button" tabindex="0" aria-label="เลือกไฟล์ Excel หรือลากไฟล์มาวาง">
         <input type="file" id="import-file" accept=".xlsx,.xls,.csv" class="file-input"><span class="file-drop-icon" aria-hidden="true">↑</span>
-        <span class="file-drop-copy"><strong id="import-file-name" aria-live="polite">ลากไฟล์ Excel มาวางที่นี่</strong><span>คลิกหรือดับเบิลคลิกเพื่อเลือกไฟล์ · รองรับ .xlsx, .xls และ .csv</span></span><span class="file-drop-browse">เลือกไฟล์</span>
+        <span class="file-drop-copy"><strong id="import-file-name" aria-live="polite">ลากไฟล์ Excel มาวางที่นี่</strong><span>หรือคลิกเพื่อเลือกไฟล์ · รองรับ .xlsx, .xls และ .csv</span></span><span class="file-drop-browse">เลือกไฟล์</span>
       </div>
-      <div class="row actions"><button type="button" id="import-preview" class="secondary">ดูตัวอย่าง</button><button type="button" id="import-run">นำเข้าข้อมูล</button></div>
       <p id="import-message" class="muted"></p>
+      <div class="form-actions" style="margin-top:0"><button type="button" id="import-preview" class="secondary">ดูตัวอย่าง</button><button type="button" id="import-run">นำเข้าข้อมูล</button></div>
     </div>
-    <div id="import-preview-view"></div><h3>ไฟล์ที่นำเข้าแล้ว</h3><div id="all-imported-files" class="import-files"></div>
+    <div id="import-preview-view"></div>
+    <div class="section-head"><h3>ไฟล์ที่นำเข้าแล้ว</h3></div>
+    <div id="all-imported-files" class="import-files"></div>
   </main>
-  <div id="toasts" class="toasts" aria-live="polite"></div><footer><span id="status" class="note">กำลังเชื่อมต่อ Firebase...</span></footer>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="../../js/theme.js"></script><script type="module" src="import.js"></script>
+  <script type="module" src="import.js"></script>
 </body>
 </html>

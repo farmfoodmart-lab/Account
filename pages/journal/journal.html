@@ -1,47 +1,62 @@
 <!DOCTYPE html>
 <html lang="th">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>บันทึกรายการ · ระบบบัญชีคู่</title><link rel="stylesheet" href="../../assets/tailwind.css">
-  <link rel="stylesheet" href="journal.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>สมุดรายวันทั่วไป · ระบบบัญชีคู่</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../style.css">
+  <link rel="modulepreload" href="../../js/data.js">
+  <script src="../../js/theme.js"></script>
 </head>
-<body class="min-h-screen animate-page-enter">
-  <header class="relative z-10 shadow-sm">
-    <h1>ระบบบัญชีคู่</h1><button type="button" id="theme-toggle" class="theme-toggle transition-all duration-200 hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:transition-none motion-reduce:hover:scale-100" aria-pressed="false"><span id="theme-toggle-icon" aria-hidden="true">☾</span><span id="theme-toggle-label">โหมดมืด</span></button>
-    <nav id="main-nav" class="flex flex-wrap gap-1" aria-label="เมนูหลัก">
-      <a href="../dashboard/dashboard.html">แดชบอร์ด</a>
-      <a href="../settings/settings.html">ตั้งค่า</a>
-      <a href="../import/import.html">นำเข้า Excel</a>
-      <a href="../customers/customers.html">รายชื่อลูกค้า</a>
-      <a href="../customer-costs/customer-costs.html">ต้นทุน/ขายลูกค้า</a>
-      <a href="../incoming-docs/incoming-docs.html">เอกสารรับเข้า</a>
-      <a href="../autodesc/autodesc.html">คำอธิบายอัตโนมัติ</a>
-      <a href="../accounts/accounts.html">หมวดหมู่บัญชี</a>
-      <a href="../receivables/receivables.html">ลูกหนี้</a>
-      <a href="../journal/journal.html" class="active" aria-current="page">บันทึกรายการ</a>
-      <a href="../ledger/ledger.html">บัญชีแยกประเภท</a>
-      <a href="../trial/trial.html">งบทดลอง</a>
-      <a href="../worksheet/worksheet.html">กระดาษทำการ</a>
-      <a href="../reports/reports.html">รายงานการเงิน</a>
-    </nav>
-  </header>
-  <main class="mx-auto w-full max-w-7xl px-4 py-8">
-    <h2 class="mb-6 text-2xl font-bold tracking-tight">บันทึกรายการ (Journal Entry)</h2>
-    <form id="journal-entry-form" class="card">
-      <div class="row"><label>วันที่ <input type="date" id="journal-entry-date" required></label><label>ลูกค้า <select id="journal-entry-customer"></select></label><label>คำอธิบาย <input type="text" id="journal-entry-description" placeholder="รายละเอียดรายการ" required></label></div>
-      <div id="journal-entry-lines"></div>
-      <div class="row actions"><button type="button" id="add-line" class="secondary">+ เพิ่มบรรทัด</button>
-        <div class="totals">เดบิต: <span id="total-debit">0.00</span> | เครดิต: <span id="total-credit">0.00</span></div>
-        <button type="submit" id="journal-entry-submit">บันทึก</button><button type="button" id="journal-entry-cancel" class="secondary" hidden>ยกเลิก</button>
-      </div><p id="journal-entry-error" class="error"></p>
-    </form>
-    <div class="journal-saved"><div class="section-head"><h3>รายการที่บันทึกแล้ว</h3><button type="button" id="journal-entry-export" class="small secondary">ส่งออก CSV</button></div>
-      <div class="filter-bar card"><label>ตั้งแต่ <input type="date" id="journal-entry-filter-start-date"></label><label>ถึง <input type="date" id="journal-entry-filter-end-date"></label>
-        <label class="grow">ค้นหา <input type="search" id="journal-entry-filter-text" placeholder="คำอธิบาย / ลูกค้า / ชื่อบัญชี"></label><button type="button" id="journal-entry-filter-clear" class="secondary small">ล้างตัวกรอง</button>
-      </div><p id="je-filter-summary" class="muted"></p><div id="journal-list"></div>
+<body>
+  <script src="../../js/shell.js"></script>
+  <main id="main">
+    <div class="page-head">
+      <div><h2>สมุดรายวันทั่วไป</h2><p class="page-sub">บันทึกรายการค้าตามหลักบัญชีคู่ ทุกรายการต้องมียอดเดบิตเท่ากับยอดเครดิต</p></div>
+      <div class="page-actions"><button type="button" id="journal-entry-export" class="secondary">ส่งออก CSV</button></div>
     </div>
+
+    <form id="journal-entry-form" class="card je-form" autocomplete="off">
+      <div class="form-title"><h3 id="journal-form-title">บันทึกรายการใหม่</h3><span class="badge warning form-mode">กำลังแก้ไข</span></div>
+      <div class="form-grid">
+        <label class="field"><span class="req">วันที่</span><input type="date" id="journal-entry-date" required></label>
+        <label class="field"><span>เลขที่เอกสาร</span><input type="text" id="journal-entry-docno" placeholder="สร้างอัตโนมัติ"></label>
+        <label class="field"><span>ประเภทรายการ</span><select id="journal-entry-kind"><option value="general">รายการทั่วไป</option><option value="adjusting">รายการปรับปรุง</option><option value="closing">รายการปิดบัญชี</option></select></label>
+        <label class="field"><span>ลูกค้า</span><select id="journal-entry-customer"></select></label>
+        <label class="field span-all"><span class="req">คำอธิบายรายการ</span><input type="text" id="journal-entry-description" placeholder="เช่น ขายสินค้าเป็นเงินสด ตามใบเสร็จเลขที่ 001" required></label>
+      </div>
+      <div class="je-table">
+        <div class="je-head" aria-hidden="true"><span class="center">#</span><span>บัญชี</span><span class="right">เดบิต</span><span class="right">เครดิต</span><span></span></div>
+        <div id="journal-entry-lines"></div>
+        <div class="je-foot">
+          <div class="je-foot-tools"><button type="button" id="add-line" class="secondary small">+ เพิ่มบรรทัด</button><button type="button" id="balance-line" class="ghost small" title="ใส่ผลต่างลงในบรรทัดที่ยังว่าง">ปรับยอดให้ดุล</button></div>
+          <span class="right" id="total-debit">0.00</span><span class="right" id="total-credit">0.00</span><span></span>
+        </div>
+      </div>
+      <div id="journal-balance" class="balance-bar idle" aria-live="polite">กรอกจำนวนเงินอย่างน้อย 2 บรรทัด</div>
+      <p id="journal-entry-error" class="error" role="alert"></p>
+      <div class="form-actions">
+        <span class="muted"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> บันทึก · <kbd>Alt</kbd> + <kbd>N</kbd> เพิ่มบรรทัด</span>
+        <span class="spacer"></span>
+        <button type="button" id="journal-entry-cancel" class="secondary" hidden>ยกเลิกการแก้ไข</button>
+        <button type="button" id="journal-entry-reset" class="ghost">ล้างฟอร์ม</button>
+        <button type="submit" id="journal-entry-submit">บันทึกรายการ</button>
+      </div>
+    </form>
+
+    <div class="section-head"><h3>รายการที่บันทึกแล้ว</h3><span id="je-filter-summary" class="muted"></span></div>
+    <div class="filter-bar">
+      <label>ตั้งแต่ <input type="date" id="journal-entry-filter-start-date"></label>
+      <label>ถึง <input type="date" id="journal-entry-filter-end-date"></label>
+      <label>ประเภท <select id="journal-entry-filter-kind"><option value="">ทั้งหมด</option><option value="general">รายการทั่วไป</option><option value="adjusting">รายการปรับปรุง</option><option value="closing">รายการปิดบัญชี</option></select></label>
+      <label class="grow">ค้นหา <input type="search" id="journal-entry-filter-text" placeholder="เลขที่ / คำอธิบาย / ลูกค้า / บัญชี / จำนวนเงิน"></label>
+      <div class="bar-end"><button type="button" id="journal-entry-filter-month" class="secondary">เดือนนี้</button><button type="button" id="journal-entry-filter-clear" class="ghost">ล้างตัวกรอง</button></div>
+    </div>
+    <div id="journal-list"><div class="skeleton"></div></div>
   </main>
-  <div id="toasts" class="toasts" aria-live="polite"></div><footer><span id="status" class="note">กำลังเชื่อมต่อ Firebase...</span></footer>
-  <script src="../../js/theme.js"></script><script type="module" src="journal.js"></script>
+  <script type="module" src="journal.js"></script>
 </body>
 </html>

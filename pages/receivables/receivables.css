@@ -1,5 +1,0 @@
-@import url("../shared.css");
-
-#receivables-table { min-width:1000px; }
-#receivables-summary { margin:12px 0; }
-#receivable-form label { display:flex; flex-direction:column; gap:6px; min-width:160px; color:var(--muted); }

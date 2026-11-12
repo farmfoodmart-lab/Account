@@ -3,7 +3,9 @@ import {
   esc,
   fmtDateDMY,
   fmtInt,
+  isLocked,
   load,
+  nextSeqNo,
   replaceState,
   save,
   state,
@@ -28,8 +30,8 @@ const IMPORT_COLUMNS = {
   incoming_docs: ["วันที่", "ประเภทเอกสาร", "ซัพพลายเออร์", "ยอดรวม", "ส่วนลด", "รูปแบบการชำระเงิน"],
   accounts: ["รหัสบัญชี", "ชื่อบัญชี", "ประเภท"],
   customers: ["รหัสลูกค้า", "ชื่อลูกค้า", "โทรศัพท์", "เลขผู้เสียภาษี", "ที่อยู่"],
-  receivables: ["รหัสลูกค้า", "เลขที่เอกสาร", "วันที่", "ครบกำหนด", "จำนวนเงิน", "ชำระแล้ว"],
-  journal: ["วันที่", "คำอธิบาย", "รหัสบัญชี", "เดบิต", "เครดิต", "อ้างอิง"],
+  receivables: ["รหัสลูกค้า", "เลขที่เอกสาร (ว่างได้ ระบบสร้างให้)", "วันที่", "ครบกำหนด", "จำนวนเงิน", "ชำระแล้ว"],
+  journal: ["วันที่", "คำอธิบาย", "รหัสบัญชี", "เดบิต", "เครดิต", "อ้างอิง", "เลขที่เอกสาร (ว่างได้ ระบบสร้างให้)"],
 };
 
 function pick(row, names) {
@@ -146,19 +148,25 @@ function importCustomers(rows) {
   return added;
 }
 
+let skippedLocked = 0;
+
 function importReceivables(rows) {
   let added = 0;
+  const reserved = new Set();
   rows.forEach((row) => {
     const code = String(pick(row, ["รหัสลูกค้า", "customerCode"])).trim();
     const customer = state.customers.find((item) => item.code === code);
     if (!customer) return;
     const amount = num(pick(row, ["จำนวนเงิน", "amount"]));
     if (amount <= 0) return;
+    const date = toIsoDate(pick(row, ["วันที่", "date"]));
+    const docNo = String(pick(row, ["เลขที่เอกสาร", "docNo", "doc"])).trim() || nextSeqNo(state.receivables, "INV", date, "", reserved);
+    reserved.add(docNo);
     state.receivables.push({
       id: uid(),
       customerId: customer.id,
-      docNo: String(pick(row, ["เลขที่เอกสาร", "docNo", "doc"])).trim() || `IMP-${uid()}`,
-      date: toIsoDate(pick(row, ["วันที่", "date"])),
+      docNo,
+      date,
       due: toIsoDate(pick(row, ["ครบกำหนด", "due"])),
       amount,
       paid: num(pick(row, ["ชำระแล้ว", "paid"])),
@@ -181,17 +189,26 @@ function importJournal(rows) {
     const date = toIsoDate(pick(row, ["วันที่", "date"]));
     const desc = String(pick(row, ["คำอธิบาย", "desc", "description"])).trim();
     const ref = String(pick(row, ["อ้างอิง", "ref", "group"])).trim();
-    const key = ref ? `ref:${ref}` : `${date}|${desc}|${index}`;
-    if (!groups.has(key)) groups.set(key, { date, desc, lines: [] });
+    const docNo = String(pick(row, ["เลขที่เอกสาร", "docNo"])).trim();
+    const key = ref ? `ref:${ref}` : docNo ? `doc:${docNo}` : `${date}|${desc}|${index}`;
+    if (!groups.has(key)) groups.set(key, { date, desc, docNo, lines: [] });
     groups.get(key).lines.push({ accountId: account.id, debit, credit });
   });
   let added = 0;
+  const reserved = new Set(state.entries.map((entry) => entry.docNo).filter(Boolean));
   groups.forEach((group) => {
     if (group.lines.length < 2) return;
+    if (isLocked(group.date)) {
+      skippedLocked += 1;
+      return;
+    }
     const debit = group.lines.reduce((total, line) => total + line.debit, 0);
     const credit = group.lines.reduce((total, line) => total + line.credit, 0);
     if (Math.abs(debit - credit) > AMOUNT_EPSILON || debit === 0) return;
-    state.entries.push({ id: uid(), ...group });
+    // Imported entries without a document number get the next JV-YYYYMM-#### automatically.
+    const docNo = group.docNo && !reserved.has(group.docNo) ? group.docNo : nextSeqNo(state.entries, "JV", group.date, "", reserved);
+    reserved.add(docNo);
+    state.entries.push({ id: uid(), ...group, docNo, kind: "general", createdAt: new Date().toISOString() });
     added += 1;
   });
   state.entries.sort((earlierEntry, laterEntry) => (earlierEntry.date || "").localeCompare(laterEntry.date || ""));
@@ -288,6 +305,7 @@ document.getElementById("import-run").addEventListener("click", async () => {
   const fileId = uid();
   const fileName = file.name || "ไฟล์นำเข้า";
   let added = 0;
+  skippedLocked = 0;
   try {
     if (type === "customer_names") added = importCustomerNames(importRows, fileId);
     else if (type === "customer_costs") added = importCustomerCosts(importRows, fileId);
@@ -313,7 +331,7 @@ document.getElementById("import-run").addEventListener("click", async () => {
       return;
     }
     renderImportedFiles("all-imported-files", undefined, () => {});
-    message.textContent = `นำเข้าสำเร็จ ${fmtInt(added)} รายการ จากไฟล์ ${fileName}`;
+    message.textContent = `นำเข้าสำเร็จ ${fmtInt(added)} รายการ จากไฟล์ ${fileName}${skippedLocked ? ` · ข้าม ${fmtInt(skippedLocked)} รายการที่อยู่ในงวดที่ปิดแล้ว` : ""}`;
     toastSuccess(`นำเข้าข้อมูลเรียบร้อย ${fmtInt(added)} รายการ`);
     importRows = [];
     fileInput.value = "";
