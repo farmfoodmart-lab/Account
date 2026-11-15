@@ -1,350 +1,465 @@
-import {
-  AMOUNT_EPSILON,
-  esc,
-  fmtDateDMY,
-  fmtInt,
-  isLocked,
-  load,
-  nextSeqNo,
-  replaceState,
-  save,
-  state,
-  TYPES,
-  uid,
-} from "../../js/data.js";
-import { confirmAction, toastError, toastSuccess } from "../../js/ui.js";
-import { toIsoDate } from "../../js/reports.js";
-import { renderImportedFiles } from "../imported-files.js";
+/**
+ * @file หน้า "นำเข้าไฟล์ Excel"
+ *
+ * ขั้นตอน: เลือกประเภทข้อมูล → เลือก/ลากไฟล์ → ดูตัวอย่าง → นำเข้า
+ *
+ * ตัวแปลงข้อมูล (parser) ของแต่ละประเภทเป็นฟังก์ชันบริสุทธิ์: รับแถวจาก Excel แล้วคืนข้อมูลชุดใหม่
+ * โดยไม่แก้ state โดยตรง จากนั้นจึงบันทึกผ่าน commitChanges (ถ้าบันทึกไม่สำเร็จ state เดิมไม่เปลี่ยน)
+ *
+ * ต้องโหลดไลบรารี SheetJS (ตัวแปร XLSX) ในหน้า HTML ก่อนไฟล์นี้
+ */
+import { commitChanges, loadData, state } from "../../src/core/store.js";
+import { ACCOUNT_TYPE_LABELS, AMOUNT_EPSILON } from "../../src/accounting/constants.js";
+import { createCustomerCodes, parseCustomerOptionValue, resolvePartyText } from "../../src/accounting/customers.js";
+import { createDocumentNumber, isDateLocked } from "../../src/accounting/journal.js";
+import { buildCreditSaleWithCostLines } from "../../src/accounting/posting.js";
+import { notifyError, notifySuccess } from "../../src/components/notifications.js";
+import { renderImportedFileList } from "../../src/components/imported-file-list.js";
+import { toIsoDate } from "../../src/utils/date.js";
+import { byId } from "../../src/utils/dom.js";
+import { escapeHtml, formatDate, formatNumber } from "../../src/utils/format.js";
+import { createId } from "../../src/utils/id.js";
 
-let importRows = [];
-const typeSelect = document.getElementById("import-type");
-const fileInput = document.getElementById("import-file");
-const dropZone = document.getElementById("import-dropzone");
-const selectedFileLabel = document.getElementById("import-file-name");
-const message = document.getElementById("import-message");
-const previewView = document.getElementById("import-preview-view");
+const importTypeSelect = byId("import-type");
+const fileInput = byId("import-file");
+const dropZone = byId("import-dropzone");
+const fileNameLabel = byId("import-file-name");
+const messageElement = byId("import-message");
+const previewContainer = byId("import-preview-view");
 
-const IMPORT_COLUMNS = {
-  customer_names: ["ชื่อลูกค้า"],
-  customer_costs: ["วันที่", "ชื่อลูกค้า", "ราคาทุน", "ราคาขาย"],
-  incoming_docs: ["วันที่", "ประเภทเอกสาร", "ซัพพลายเออร์", "ยอดรวม", "ส่วนลด", "รูปแบบการชำระเงิน"],
-  accounts: ["รหัสบัญชี", "ชื่อบัญชี", "ประเภท"],
-  customers: ["รหัสลูกค้า", "ชื่อลูกค้า", "โทรศัพท์", "เลขผู้เสียภาษี", "ที่อยู่"],
-  receivables: ["รหัสลูกค้า", "เลขที่เอกสาร (ว่างได้ ระบบสร้างให้)", "วันที่", "ครบกำหนด", "จำนวนเงิน", "ชำระแล้ว"],
-  journal: ["วันที่", "คำอธิบาย", "รหัสบัญชี", "เดบิต", "เครดิต", "อ้างอิง", "เลขที่เอกสาร (ว่างได้ ระบบสร้างให้)"],
-};
+/** จำนวนแถวที่แสดงในตัวอย่าง */
+const PREVIEW_ROW_LIMIT = 5;
 
-function pick(row, names) {
-  for (const name of names) {
-    if (row[name] != null && String(row[name]).trim() !== "") return row[name];
+/** แถวที่อ่านได้จากไฟล์ล่าสุด (ล้างเมื่อเปลี่ยนไฟล์หรือประเภท) */
+let sheetRows = [];
+
+/* ------------------------------------------------------------------ */
+/* ฟังก์ชันช่วยอ่านค่าจากแถว Excel                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ค่าจากคอลัมน์แรกที่มีข้อมูล (รองรับชื่อคอลัมน์หลายแบบ ทั้งไทยและอังกฤษ)
+ * @param {Record<string, unknown>} row
+ * @param {string[]} columnNames
+ */
+function readCell(row, columnNames) {
+  for (const columnName of columnNames) {
+    if (row[columnName] != null && String(row[columnName]).trim() !== "") return row[columnName];
   }
   return "";
 }
 
-function num(value) {
-  const parsed = parseFloat(String(value == null ? "" : value).replace(/,/g, ""));
+const readText = (row, columnNames) => String(readCell(row, columnNames)).trim();
+
+/** อ่านตัวเลข (ตัดจุลภาคคั่นหลักพันออกก่อน) */
+function readNumber(row, columnNames) {
+  const parsed = parseFloat(String(readCell(row, columnNames)).replace(/,/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function parseSheet(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const workbook = XLSX.read(event.target.result, { type: "array" });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        if (!sheet) throw new Error("ไม่พบ worksheet ในไฟล์");
-        resolve(XLSX.utils.sheet_to_json(sheet, { defval: "" }));
-      } catch (error) {
-        reject(error);
-      }
-    };
-    reader.onerror = () => reject(reader.error || new Error("อ่านไฟล์ไม่สำเร็จ"));
-    reader.readAsArrayBuffer(file);
+/* ------------------------------------------------------------------ */
+/* ตัวแปลงข้อมูลแต่ละประเภท                                               */
+/* ทุกตัวคืน { changes, importedCount, skippedLockedCount? }               */
+/* ------------------------------------------------------------------ */
+
+/** รายชื่อลูกค้า: ใช้รหัสจากไฟล์ถ้ามี ไม่มีจะสร้างรหัสอัตโนมัติ (C001, C002, ...) */
+function parseCustomerNames(rows, fileId) {
+  const names = rows.map((row) => ({
+    name: readText(row, ["ชื่อลูกค้า", "name", "Name", "customer"]),
+    code: readText(row, ["รหัสลูกค้า", "code", "Code"]),
+  })).filter((row) => row.name);
+  const generatedCodes = createCustomerCodes(names.filter((row) => !row.code).length);
+  const newRecords = names.map((row) => ({ code: row.code || generatedCodes.shift(), name: row.name, fileId }));
+  return { changes: { customerNames: [...state.customerNames, ...newRecords] }, importedCount: newRecords.length };
+}
+
+/**
+ * รายชื่อลูกค้าพร้อมต้นทุน: เก็บข้อมูล และลงบัญชีให้ทุกแถว (1 แถว = 1 รายการในสมุดรายวัน)
+ *   Dr ลูกหนี้การค้า (ราคาขาย)   Cr รายได้ (ราคาขาย)
+ *   Dr ต้นทุนขาย (ราคาทุน)       Cr สินค้าคงเหลือ (ราคาทุน)
+ * - ชื่อลูกค้าในไฟล์เป็นคู่ค้าของรายการ (จึงแสดงในทะเบียนลูกหนี้)
+ * - ทั้งข้อมูลและรายการบัญชีมี fileId → ลบไฟล์แล้วรายการบัญชีถูกลบตามไปด้วย
+ * - แถวที่ไม่มีวันที่ หรืออยู่ในงวดที่ปิดแล้ว: เก็บข้อมูลไว้แต่ไม่ลงบัญชี
+ */
+function parseCustomerCosts(rows, fileId) {
+  const newRecords = rows
+    .map((row) => ({
+      id: createId(),
+      date: formatDate(readCell(row, ["วันที่", "date", "Date"])),
+      name: readText(row, ["ชื่อลูกค้า", "name", "Name"]),
+      cost: readNumber(row, ["ราคาทุน", "cost", "Cost"]),
+      price: readNumber(row, ["ราคาขาย", "price", "Price", "sale"]),
+      fileId,
+    }))
+    .filter((record) => record.name || record.date || record.cost || record.price);
+
+  const newEntries = [];
+  const reservedNumbers = new Set();
+  let unpostedCount = 0;
+  let skippedLockedCount = 0;
+  newRecords.forEach((record) => {
+    const isoDate = toIsoDate(record.date);
+    if (!(record.price > 0 || record.cost > 0)) return; // ไม่มีจำนวนเงิน ไม่ต้องลงบัญชี
+    if (!isoDate) {
+      unpostedCount += 1;
+      return;
+    }
+    if (isDateLocked(isoDate)) {
+      skippedLockedCount += 1;
+      return;
+    }
+    const posting = buildCreditSaleWithCostLines(record);
+    if (posting.error) throw new Error(posting.error); // บัญชีไม่ครบ: หยุดทั้งไฟล์ ไม่บันทึกอะไรเลย
+
+    const { customerId, customerName } = parseCustomerOptionValue(resolvePartyText(record.name));
+    const entryId = createId();
+    newEntries.push({
+      id: entryId,
+      date: isoDate,
+      docNo: createDocumentNumber(state.entries, "JV", isoDate, "", reservedNumbers),
+      kind: "general",
+      desc: `ขายสินค้าเชื่อ ${record.name}`.trim(),
+      lines: posting.lines,
+      fileId,
+      createdAt: new Date().toISOString(),
+      ...(customerId ? { customerId } : {}),
+      ...(customerName ? { customerName } : {}),
+    });
+    record.entryId = entryId; // ใช้ลบรายการบัญชีตามเมื่อผู้ใช้ลบแถวนี้
   });
+
+  const entries = [...state.entries, ...newEntries]
+    .sort((leftEntry, rightEntry) => (leftEntry.date || "").localeCompare(rightEntry.date || ""));
+  return {
+    changes: { customerCosts: [...state.customerCosts, ...newRecords], entries },
+    importedCount: newRecords.length,
+    postedCount: newEntries.length,
+    unpostedCount,
+    skippedLockedCount,
+  };
+}
+
+function parseIncomingDocuments(rows, fileId) {
+  const newRecords = rows
+    .map((row) => ({
+      date: formatDate(readCell(row, ["วันที่", "date", "Date"])),
+      docType: readText(row, ["ประเภทเอกสาร", "docType", "type"]),
+      supplier: readText(row, ["ซัพพลายเออร์", "supplier", "vendor"]),
+      total: readNumber(row, ["ยอดรวม", "total", "amount"]),
+      discount: readNumber(row, ["ส่วนลด", "discount"]),
+      payment: readText(row, ["รูปแบบการชำระเงิน", "payment"]),
+      fileId,
+    }))
+    .filter((record) => record.date || record.docType || record.supplier || record.total || record.discount || record.payment);
+  return { changes: { incomingDocs: [...state.incomingDocs, ...newRecords] }, importedCount: newRecords.length };
+}
+
+/** ผังบัญชี: ข้ามรหัสที่มีอยู่แล้ว และประเภทที่ไม่รู้จัก */
+function parseAccounts(rows) {
+  const existingCodes = new Set(state.accounts.map((account) => account.code));
+  const newAccounts = [];
+  rows.forEach((row) => {
+    const code = readText(row, ["รหัสบัญชี", "code", "Code"]);
+    const name = readText(row, ["ชื่อบัญชี", "name", "Name"]);
+    const type = readText(row, ["ประเภท", "type", "Type"]).toLowerCase();
+    if (!code || !name || !ACCOUNT_TYPE_LABELS[type] || existingCodes.has(code)) return;
+    existingCodes.add(code);
+    newAccounts.push({ id: createId(), code, name, type });
+  });
+  const accounts = [...state.accounts, ...newAccounts]
+    .sort((leftAccount, rightAccount) => String(leftAccount.code).localeCompare(String(rightAccount.code)));
+  return { changes: { accounts }, importedCount: newAccounts.length };
+}
+
+/** ทะเบียนลูกค้า: ข้ามรหัสลูกค้าที่มีอยู่แล้ว */
+function parseCustomers(rows) {
+  const existingCodes = new Set(state.customers.map((customer) => customer.code));
+  const newCustomers = [];
+  rows.forEach((row) => {
+    const code = readText(row, ["รหัสลูกค้า", "code", "Code"]);
+    const name = readText(row, ["ชื่อลูกค้า", "ชื่อ", "name", "Name"]);
+    if (!code || !name || existingCodes.has(code)) return;
+    existingCodes.add(code);
+    newCustomers.push({
+      id: createId(),
+      code,
+      name,
+      phone: readText(row, ["โทรศัพท์", "phone"]),
+      tax: readText(row, ["เลขผู้เสียภาษี", "tax"]),
+      address: readText(row, ["ที่อยู่", "address"]),
+    });
+  });
+  const customers = [...state.customers, ...newCustomers]
+    .sort((leftCustomer, rightCustomer) => (leftCustomer.code || "").localeCompare(rightCustomer.code || ""));
+  return { changes: { customers }, importedCount: newCustomers.length };
+}
+
+/** ลูกหนี้: ต้องมีรหัสลูกค้าที่อยู่ในทะเบียน เอกสารที่ไม่มีเลขที่จะได้เลข INV-YYYYMM-#### */
+function parseReceivables(rows) {
+  const reservedNumbers = new Set();
+  const newReceivables = [];
+  rows.forEach((row) => {
+    const customerCode = readText(row, ["รหัสลูกค้า", "customerCode"]);
+    const customer = state.customers.find((item) => item.code === customerCode);
+    const amount = readNumber(row, ["จำนวนเงิน", "amount"]);
+    if (!customer || amount <= 0) return;
+
+    const date = toIsoDate(readCell(row, ["วันที่", "date"]));
+    const documentNumber = readText(row, ["เลขที่เอกสาร", "docNo", "doc"])
+      || createDocumentNumber(state.receivables, "INV", date, "", reservedNumbers);
+    reservedNumbers.add(documentNumber);
+    newReceivables.push({
+      id: createId(),
+      customerId: customer.id,
+      docNo: documentNumber,
+      date,
+      due: toIsoDate(readCell(row, ["ครบกำหนด", "due"])),
+      amount,
+      paid: readNumber(row, ["ชำระแล้ว", "paid"]),
+      note: readText(row, ["หมายเหตุ", "note"]),
+    });
+  });
+  return { changes: { receivables: [...state.receivables, ...newReceivables] }, importedCount: newReceivables.length };
+}
+
+/**
+ * รายการบัญชี: แต่ละแถวคือหนึ่งบรรทัด จัดกลุ่มเป็นรายการด้วยคอลัมน์ "อ้างอิง" หรือ "เลขที่เอกสาร"
+ * - รายการที่ไม่ดุล มีน้อยกว่า 2 บรรทัด หรืออยู่ในงวดที่ล็อกแล้ว จะถูกข้าม
+ * - รายการที่ไม่มีเลขที่เอกสาร (หรือเลขซ้ำ) จะได้เลข JV-YYYYMM-#### อัตโนมัติ
+ */
+function parseJournalEntries(rows) {
+  const entryGroups = new Map();
+  rows.forEach((row, rowIndex) => {
+    const account = state.accounts.find((item) => item.code === readText(row, ["รหัสบัญชี", "accountCode", "code"]));
+    const debit = readNumber(row, ["เดบิต", "debit"]);
+    const credit = readNumber(row, ["เครดิต", "credit"]);
+    if (!account || (!debit && !credit)) return;
+
+    const date = toIsoDate(readCell(row, ["วันที่", "date"]));
+    const desc = readText(row, ["คำอธิบาย", "desc", "description"]);
+    const reference = readText(row, ["อ้างอิง", "ref", "group"]);
+    const docNo = readText(row, ["เลขที่เอกสาร", "docNo"]);
+    // ไม่มีทั้งอ้างอิงและเลขที่ → ถือเป็นรายการเดี่ยวต่อแถว (จะถูกข้ามเพราะมีบรรทัดเดียว)
+    const groupKey = reference ? `ref:${reference}` : docNo ? `doc:${docNo}` : `row:${rowIndex}`;
+    if (!entryGroups.has(groupKey)) entryGroups.set(groupKey, { date, desc, docNo, lines: [] });
+    entryGroups.get(groupKey).lines.push({ accountId: account.id, debit, credit });
+  });
+
+  const usedNumbers = new Set(state.entries.map((entry) => entry.docNo).filter(Boolean));
+  const newEntries = [];
+  let skippedLockedCount = 0;
+  entryGroups.forEach((group) => {
+    if (group.lines.length < 2) return;
+    if (isDateLocked(group.date)) {
+      skippedLockedCount += 1;
+      return;
+    }
+    const totalDebit = group.lines.reduce((total, line) => total + line.debit, 0);
+    const totalCredit = group.lines.reduce((total, line) => total + line.credit, 0);
+    if (totalDebit === 0 || Math.abs(totalDebit - totalCredit) > AMOUNT_EPSILON) return;
+
+    const documentNumber = group.docNo && !usedNumbers.has(group.docNo)
+      ? group.docNo
+      : createDocumentNumber(state.entries, "JV", group.date, "", usedNumbers);
+    usedNumbers.add(documentNumber);
+    newEntries.push({ id: createId(), ...group, docNo: documentNumber, kind: "general", createdAt: new Date().toISOString() });
+  });
+
+  const entries = [...state.entries, ...newEntries]
+    .sort((leftEntry, rightEntry) => (leftEntry.date || "").localeCompare(rightEntry.date || ""));
+  return { changes: { entries }, importedCount: newEntries.length, skippedLockedCount };
+}
+
+/**
+ * ประเภทข้อมูลที่นำเข้าได้ (ค่า key ตรงกับ <option value> ในหน้า HTML)
+ * - requiredColumns แสดงเป็นคำแนะนำให้ผู้ใช้
+ * - tracksFile = บันทึกชื่อไฟล์ไว้ในรายการ "ไฟล์ที่นำเข้า" เพื่อลบทั้งไฟล์ได้ภายหลัง
+ */
+const IMPORT_TYPES = {
+  customer_names: { requiredColumns: ["ชื่อลูกค้า", "รหัสลูกค้า (ว่างได้ ระบบสร้างให้)"], tracksFile: true, parse: parseCustomerNames },
+  customer_costs: { requiredColumns: ["วันที่", "ชื่อลูกค้า", "ราคาทุน", "ราคาขาย"], tracksFile: true, parse: parseCustomerCosts, postsEntries: true },
+  incoming_docs: { requiredColumns: ["วันที่", "ประเภทเอกสาร", "ซัพพลายเออร์", "ยอดรวม", "ส่วนลด", "รูปแบบการชำระเงิน"], tracksFile: true, parse: parseIncomingDocuments },
+  accounts: { requiredColumns: ["รหัสบัญชี", "ชื่อบัญชี", "ประเภท (asset/liability/equity/revenue/expense)"], parse: parseAccounts },
+  customers: { requiredColumns: ["รหัสลูกค้า", "ชื่อลูกค้า", "โทรศัพท์", "เลขผู้เสียภาษี", "ที่อยู่"], parse: parseCustomers },
+  receivables: { requiredColumns: ["รหัสลูกค้า", "เลขที่เอกสาร (ว่างได้ ระบบสร้างให้)", "วันที่", "ครบกำหนด", "จำนวนเงิน", "ชำระแล้ว"], parse: parseReceivables },
+  journal: { requiredColumns: ["วันที่", "คำอธิบาย", "รหัสบัญชี", "เดบิต", "เครดิต", "อ้างอิง", "เลขที่เอกสาร (ว่างได้ ระบบสร้างให้)"], parse: parseJournalEntries },
+};
+
+/* ------------------------------------------------------------------ */
+/* การอ่านไฟล์และแสดงตัวอย่าง                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * อ่าน worksheet แรกของไฟล์ Excel/CSV เป็นอาร์เรย์ของแถว ({ หัวคอลัมน์: ค่า })
+ * @param {File} file
+ * @returns {Promise<Array<Record<string, unknown>>>}
+ */
+async function readSpreadsheet(file) {
+  // CSV: อ่านเป็นข้อความ UTF-8 เอง (SheetJS เดารหัสอักขระของ CSV ที่ไม่มี BOM ผิด ทำให้ภาษาไทยเพี้ยน)
+  // raw: true = เก็บค่าตามที่เห็นเป็นข้อความ ไม่ให้ SheetJS แปลง "05/11/2026" เป็นวันที่แบบอเมริกา (เดือน/วัน)
+  // วันที่จึงถูกตีความแบบไทย (วัน/เดือน/ปี) โดย formatDate/toIsoDate
+  const isCsv = /.csv$/i.test(file.name);
+  const workbook = isCsv
+    ? XLSX.read((await file.text()).replace(/^﻿/, ""), { type: "string", raw: true })
+    : XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+  if (!firstSheet) throw new Error("ไม่พบ worksheet ในไฟล์");
+  return XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
 }
 
 function renderPreview(rows) {
   if (!rows.length) {
-    previewView.innerHTML = '<p class="empty-state">ไม่พบข้อมูลในไฟล์</p>';
+    previewContainer.innerHTML = '<p class="empty-state">ไม่พบข้อมูลในไฟล์</p>';
     return;
   }
-  const keys = Object.keys(rows[0]);
-  previewView.innerHTML = `<div class="table-wrap"><table><thead><tr>${keys.map((key) => `<th>${esc(key)}</th>`).join("")}</tr></thead>
-    <tbody>${rows.slice(0, 5).map((row) => `<tr>${keys.map((key) => `<td>${esc(row[key])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
-    <p class="muted" style="margin-top:8px">แสดง ${fmtInt(Math.min(5, rows.length))} จาก ${fmtInt(rows.length)} แถว</p>`;
+  const columnNames = Object.keys(rows[0]);
+  const headerCells = columnNames.map((columnName) => `<th>${escapeHtml(columnName)}</th>`).join("");
+  const bodyRows = rows.slice(0, PREVIEW_ROW_LIMIT)
+    .map((row) => `<tr>${columnNames.map((columnName) => `<td>${escapeHtml(row[columnName])}</td>`).join("")}</tr>`)
+    .join("");
+  previewContainer.innerHTML = `<div class="table-wrap"><table><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></div>
+    <p class="muted" style="margin-top:8px">แสดง ${formatNumber(Math.min(PREVIEW_ROW_LIMIT, rows.length))} จาก ${formatNumber(rows.length)} แถว</p>`;
 }
 
-function importCustomerNames(rows, fileId) {
-  let added = 0;
-  rows.forEach((row) => {
-    const name = String(pick(row, ["ชื่อลูกค้า", "name", "Name", "customer"])).trim();
-    if (!name) return;
-    state.customerNames.push({ name, fileId });
-    added += 1;
-  });
-  return added;
-}
-
-function importCustomerCosts(rows, fileId) {
-  let added = 0;
-  rows.forEach((row) => {
-    const date = fmtDateDMY(pick(row, ["วันที่", "date", "Date"]));
-    const name = String(pick(row, ["ชื่อลูกค้า", "name", "Name"])).trim();
-    const cost = num(pick(row, ["ราคาทุน", "cost", "Cost"]));
-    const price = num(pick(row, ["ราคาขาย", "price", "Price", "sale"]));
-    if (!name && !date && !cost && !price) return;
-    state.customerCosts.push({ date, name, cost, price, fileId });
-    added += 1;
-  });
-  return added;
-}
-
-function importIncomingDocs(rows, fileId) {
-  let added = 0;
-  rows.forEach((row) => {
-    const date = fmtDateDMY(pick(row, ["วันที่", "date", "Date"]));
-    const docType = String(pick(row, ["ประเภทเอกสาร", "docType", "type"])).trim();
-    const supplier = String(pick(row, ["ซัพพลายเออร์", "supplier", "vendor"])).trim();
-    const total = num(pick(row, ["ยอดรวม", "total", "amount"]));
-    const discount = num(pick(row, ["ส่วนลด", "discount"]));
-    const payment = String(pick(row, ["รูปแบบการชำระเงิน", "payment"])).trim();
-    if (!date && !docType && !supplier && !total && !discount && !payment) return;
-    state.incomingDocs.push({ date, docType, supplier, total, discount, payment, fileId });
-    added += 1;
-  });
-  return added;
-}
-
-function importAccounts(rows) {
-  let added = 0;
-  rows.forEach((row) => {
-    const code = String(pick(row, ["รหัสบัญชี", "code", "Code"])).trim();
-    const name = String(pick(row, ["ชื่อบัญชี", "name", "Name"])).trim();
-    const type = String(pick(row, ["ประเภท", "type", "Type"])).trim().toLowerCase();
-    if (!code || !name || !TYPES[type] || state.accounts.some((account) => account.code === code)) return;
-    state.accounts.push({ id: uid(), code, name, type });
-    added += 1;
-  });
-  state.accounts.sort((leftAccount, rightAccount) => leftAccount.code.localeCompare(rightAccount.code));
-  return added;
-}
-
-function importCustomers(rows) {
-  let added = 0;
-  rows.forEach((row) => {
-    const code = String(pick(row, ["รหัสลูกค้า", "code", "Code"])).trim();
-    const name = String(pick(row, ["ชื่อลูกค้า", "ชื่อ", "name", "Name"])).trim();
-    if (!code || !name || state.customers.some((customer) => customer.code === code)) return;
-    state.customers.push({
-      id: uid(), code, name,
-      phone: String(pick(row, ["โทรศัพท์", "phone"])).trim(),
-      tax: String(pick(row, ["เลขผู้เสียภาษี", "tax"])).trim(),
-      address: String(pick(row, ["ที่อยู่", "address"])).trim(),
-    });
-    added += 1;
-  });
-  state.customers.sort((leftCustomer, rightCustomer) => (leftCustomer.code || "").localeCompare(rightCustomer.code || ""));
-  return added;
-}
-
-let skippedLocked = 0;
-
-function importReceivables(rows) {
-  let added = 0;
-  const reserved = new Set();
-  rows.forEach((row) => {
-    const code = String(pick(row, ["รหัสลูกค้า", "customerCode"])).trim();
-    const customer = state.customers.find((item) => item.code === code);
-    if (!customer) return;
-    const amount = num(pick(row, ["จำนวนเงิน", "amount"]));
-    if (amount <= 0) return;
-    const date = toIsoDate(pick(row, ["วันที่", "date"]));
-    const docNo = String(pick(row, ["เลขที่เอกสาร", "docNo", "doc"])).trim() || nextSeqNo(state.receivables, "INV", date, "", reserved);
-    reserved.add(docNo);
-    state.receivables.push({
-      id: uid(),
-      customerId: customer.id,
-      docNo,
-      date,
-      due: toIsoDate(pick(row, ["ครบกำหนด", "due"])),
-      amount,
-      paid: num(pick(row, ["ชำระแล้ว", "paid"])),
-      note: String(pick(row, ["หมายเหตุ", "note"])).trim(),
-    });
-    added += 1;
-  });
-  return added;
-}
-
-function importJournal(rows) {
-  const groups = new Map();
-  rows.forEach((row, index) => {
-    const code = String(pick(row, ["รหัสบัญชี", "accountCode", "code"])).trim();
-    const account = state.accounts.find((item) => item.code === code);
-    if (!account) return;
-    const debit = num(pick(row, ["เดบิต", "debit"]));
-    const credit = num(pick(row, ["เครดิต", "credit"]));
-    if (!debit && !credit) return;
-    const date = toIsoDate(pick(row, ["วันที่", "date"]));
-    const desc = String(pick(row, ["คำอธิบาย", "desc", "description"])).trim();
-    const ref = String(pick(row, ["อ้างอิง", "ref", "group"])).trim();
-    const docNo = String(pick(row, ["เลขที่เอกสาร", "docNo"])).trim();
-    const key = ref ? `ref:${ref}` : docNo ? `doc:${docNo}` : `${date}|${desc}|${index}`;
-    if (!groups.has(key)) groups.set(key, { date, desc, docNo, lines: [] });
-    groups.get(key).lines.push({ accountId: account.id, debit, credit });
-  });
-  let added = 0;
-  const reserved = new Set(state.entries.map((entry) => entry.docNo).filter(Boolean));
-  groups.forEach((group) => {
-    if (group.lines.length < 2) return;
-    if (isLocked(group.date)) {
-      skippedLocked += 1;
-      return;
-    }
-    const debit = group.lines.reduce((total, line) => total + line.debit, 0);
-    const credit = group.lines.reduce((total, line) => total + line.credit, 0);
-    if (Math.abs(debit - credit) > AMOUNT_EPSILON || debit === 0) return;
-    // Imported entries without a document number get the next JV-YYYYMM-#### automatically.
-    const docNo = group.docNo && !reserved.has(group.docNo) ? group.docNo : nextSeqNo(state.entries, "JV", group.date, "", reserved);
-    reserved.add(docNo);
-    state.entries.push({ id: uid(), ...group, docNo, kind: "general", createdAt: new Date().toISOString() });
-    added += 1;
-  });
-  state.entries.sort((earlierEntry, laterEntry) => (earlierEntry.date || "").localeCompare(laterEntry.date || ""));
-  return added;
-}
-
-function updateSelectedFile() {
-  const file = fileInput.files[0];
-  selectedFileLabel.textContent = file ? file.name : "ลากไฟล์ Excel มาวางที่นี่";
-  dropZone.classList.toggle("has-file", Boolean(file));
-  importRows = [];
-  previewView.innerHTML = "";
-}
-
-async function readSelectedFile() {
+/** อ่านไฟล์ที่เลือก (ถ้ายังไม่ได้เลือกไฟล์หรืออ่านไม่สำเร็จ คืน null) */
+async function loadSelectedFile() {
   const file = fileInput.files[0];
   if (!file) {
-    toastError("เลือกไฟล์ก่อน");
+    notifyError("เลือกไฟล์ก่อน");
     return null;
   }
   try {
-    importRows = await parseSheet(file);
+    sheetRows = await readSpreadsheet(file);
     return file;
   } catch (error) {
     console.error(error);
-    toastError(`อ่านไฟล์ไม่สำเร็จ: ${error.message || error}`);
+    notifyError(`อ่านไฟล์ไม่สำเร็จ: ${error.message || error}`);
     return null;
   }
 }
 
-fileInput.addEventListener("change", updateSelectedFile);
-dropZone.addEventListener("click", (event) => {
-  if (event.target !== fileInput) fileInput.click();
-});
-dropZone.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    fileInput.click();
-  }
-});
-dropZone.addEventListener("dragenter", (event) => {
-  event.preventDefault();
-  dropZone.classList.add("is-dragover");
-});
-dropZone.addEventListener("dragover", (event) => {
-  event.preventDefault();
-  event.dataTransfer.dropEffect = "copy";
-  dropZone.classList.add("is-dragover");
-});
-dropZone.addEventListener("dragleave", (event) => {
-  if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove("is-dragover");
-});
-dropZone.addEventListener("drop", (event) => {
-  event.preventDefault();
-  dropZone.classList.remove("is-dragover");
-  const file = event.dataTransfer.files[0];
-  if (!file) return;
-  if (!/\.(xlsx|xls|csv)$/i.test(file.name)) {
-    toastError("รองรับไฟล์ .xlsx, .xls หรือ .csv เท่านั้น");
-    return;
-  }
-  const transfer = new DataTransfer();
-  transfer.items.add(file);
-  fileInput.files = transfer.files;
-  fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-});
-typeSelect.addEventListener("change", () => {
-  const columns = IMPORT_COLUMNS[typeSelect.value];
-  message.textContent = columns ? `คอลัมน์ที่ต้องมี: ${columns.join(", ")}` : "";
-  importRows = [];
-  previewView.innerHTML = "";
-});
+function handleFileSelected() {
+  const file = fileInput.files[0];
+  fileNameLabel.textContent = file ? file.name : "ลากไฟล์ Excel มาวางที่นี่";
+  dropZone.classList.toggle("has-file", Boolean(file));
+  sheetRows = [];
+  previewContainer.innerHTML = "";
+}
 
-document.getElementById("import-preview").addEventListener("click", async () => {
-  const file = await readSelectedFile();
-  if (!file) return;
-  renderPreview(importRows);
-  message.textContent = `อ่านได้ ${fmtInt(importRows.length)} แถว จากไฟล์ ${file.name}`;
-});
+function handleImportTypeChanged() {
+  const importType = IMPORT_TYPES[importTypeSelect.value];
+  messageElement.textContent = importType ? `คอลัมน์ที่ต้องมี: ${importType.requiredColumns.join(", ")}` : "";
+  sheetRows = [];
+  previewContainer.innerHTML = "";
+}
 
-document.getElementById("import-run").addEventListener("click", async () => {
-  const type = typeSelect.value;
+async function showPreview() {
+  const file = await loadSelectedFile();
+  if (!file) return;
+  renderPreview(sheetRows);
+  messageElement.textContent = `อ่านได้ ${formatNumber(sheetRows.length)} แถว จากไฟล์ ${file.name}`;
+}
+
+/* ------------------------------------------------------------------ */
+/* นำเข้าข้อมูล                                                          */
+/* ------------------------------------------------------------------ */
+
+async function runImport() {
   let file = fileInput.files[0];
-  if (!file || !importRows.length) {
-    file = await readSelectedFile();
+  if (!file || !sheetRows.length) {
+    file = await loadSelectedFile();
     if (!file) return;
   }
-  if (!importRows.length) {
-    toastError("ไม่มีข้อมูลให้นำเข้า");
+  if (!sheetRows.length) {
+    notifyError("ไม่มีข้อมูลให้นำเข้า");
     return;
   }
 
-  const previous = JSON.parse(JSON.stringify(state));
-  const fileId = uid();
+  const importTypeKey = importTypeSelect.value;
+  const importType = IMPORT_TYPES[importTypeKey];
+  const fileId = createId();
   const fileName = file.name || "ไฟล์นำเข้า";
-  let added = 0;
-  skippedLocked = 0;
+
   try {
-    if (type === "customer_names") added = importCustomerNames(importRows, fileId);
-    else if (type === "customer_costs") added = importCustomerCosts(importRows, fileId);
-    else if (type === "incoming_docs") added = importIncomingDocs(importRows, fileId);
-    else if (type === "accounts") added = importAccounts(importRows);
-    else if (type === "customers") added = importCustomers(importRows);
-    else if (type === "receivables") added = importReceivables(importRows);
-    else if (type === "journal") added = importJournal(importRows);
+    const { changes, importedCount, postedCount, unpostedCount = 0, skippedLockedCount = 0 } = importType.parse(sheetRows, fileId);
+    if (!importedCount) {
+      messageElement.textContent = "ไม่พบข้อมูลที่นำเข้าได้ ตรวจสอบชื่อคอลัมน์อีกครั้ง";
+      notifyError("ไม่มีแถวที่นำเข้าได้");
+      return;
+    }
+    if (importType.tracksFile) {
+      changes.importFiles = [
+        ...state.importFiles,
+        { id: fileId, name: fileName, type: importTypeKey, count: importedCount, at: new Date().toISOString() },
+      ];
+    }
 
-    if (!added) {
-      replaceState(previous);
-      message.textContent = "ไม่พบข้อมูลที่นำเข้าได้ ตรวจสอบชื่อคอลัมน์อีกครั้ง";
-      toastError("ไม่มีแถวที่นำเข้าได้");
+    if (!(await commitChanges(changes))) {
+      messageElement.textContent = "บันทึกไม่สำเร็จ";
       return;
     }
 
-    if (["customer_names", "customer_costs", "incoming_docs"].includes(type)) {
-      state.importFiles.push({ id: fileId, name: fileName, type, count: added, at: new Date().toISOString() });
-    }
-    if (!(await save())) {
-      replaceState(previous);
-      message.textContent = "บันทึกไม่สำเร็จ";
-      return;
-    }
-    renderImportedFiles("all-imported-files", undefined, () => {});
-    message.textContent = `นำเข้าสำเร็จ ${fmtInt(added)} รายการ จากไฟล์ ${fileName}${skippedLocked ? ` · ข้าม ${fmtInt(skippedLocked)} รายการที่อยู่ในงวดที่ปิดแล้ว` : ""}`;
-    toastSuccess(`นำเข้าข้อมูลเรียบร้อย ${fmtInt(added)} รายการ`);
-    importRows = [];
+    renderImportedFileList("all-imported-files");
+    const postedText = importType.postsEntries ? ` · ลงบัญชีในสมุดรายวัน ${formatNumber(postedCount)} รายการ` : "";
+    const unpostedText = unpostedCount ? ` · ไม่ได้ลงบัญชี ${formatNumber(unpostedCount)} แถว (ไม่มีวันที่)` : "";
+    const skippedText = skippedLockedCount ? ` · ข้ามการลงบัญชี ${formatNumber(skippedLockedCount)} แถวที่อยู่ในงวดที่ปิดแล้ว` : "";
+    messageElement.textContent = `นำเข้าสำเร็จ ${formatNumber(importedCount)} รายการ จากไฟล์ ${fileName}${postedText}${unpostedText}${skippedText}`;
+    notifySuccess(`นำเข้าข้อมูลเรียบร้อย ${formatNumber(importedCount)} รายการ`);
     fileInput.value = "";
-    updateSelectedFile();
+    handleFileSelected();
   } catch (error) {
-    replaceState(previous);
     console.error(error);
-    message.textContent = `นำเข้าไม่สำเร็จ: ${error.message || error}`;
-    toastError("นำเข้าไม่สำเร็จ");
+    messageElement.textContent = `นำเข้าไม่สำเร็จ: ${error.message || error}`;
+    notifyError(error.message || String(error), { title: "นำเข้าไม่สำเร็จ" });
   }
-});
+}
 
-if (await load()) {
-  renderImportedFiles("all-imported-files", undefined, () => {});
-  typeSelect.dispatchEvent(new Event("change"));
+/* ------------------------------------------------------------------ */
+/* การลากไฟล์มาวาง (drag & drop)                                         */
+/* ------------------------------------------------------------------ */
+
+function setupDropZone() {
+  dropZone.addEventListener("click", (event) => {
+    if (event.target !== fileInput) fileInput.click();
+  });
+  dropZone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      fileInput.click();
+    }
+  });
+  ["dragenter", "dragover"].forEach((eventName) => dropZone.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    dropZone.classList.add("is-dragover");
+  }));
+  dropZone.addEventListener("dragleave", (event) => {
+    if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove("is-dragover");
+  });
+  dropZone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    dropZone.classList.remove("is-dragover");
+    const droppedFile = event.dataTransfer.files[0];
+    if (!droppedFile) return;
+    if (!/\.(xlsx|xls|csv)$/i.test(droppedFile.name)) {
+      notifyError("รองรับไฟล์ .xlsx, .xls หรือ .csv เท่านั้น");
+      return;
+    }
+    // ใส่ไฟล์ที่ลากมาลงใน <input type=file> เพื่อใช้เส้นทางเดียวกับการเลือกไฟล์ปกติ
+    const transfer = new DataTransfer();
+    transfer.items.add(droppedFile);
+    fileInput.files = transfer.files;
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+fileInput.addEventListener("change", handleFileSelected);
+importTypeSelect.addEventListener("change", handleImportTypeChanged);
+byId("import-preview").addEventListener("click", showPreview);
+byId("import-run").addEventListener("click", runImport);
+setupDropZone();
+
+if (await loadData()) {
+  renderImportedFileList("all-imported-files");
+  handleImportTypeChanged();
 }

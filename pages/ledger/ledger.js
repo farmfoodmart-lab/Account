@@ -1,232 +1,312 @@
-import {
-  AMOUNT_EPSILON,
-  TYPES,
-  compareAccounts,
-  esc,
-  fmt,
-  fmtDateDMY,
-  fmtInt,
-  load,
-  normalDebit,
-  state, onDataRefresh
-} from "../../js/data.js";
-import { toIsoDate } from "../../js/reports.js";
-import { debounce, downloadCsvFile, fileStamp, toastError, toastSuccess } from "../../js/ui.js";
-import { toCsv } from "../../js/csv.js";
+/**
+ * @file หน้า "บัญชีแยกประเภท" — ความเคลื่อนไหวและยอดคงเหลือของแต่ละบัญชี
+ *
+ * ยอดคงเหลือนับเฉพาะรายการในช่วงที่เลือก (ค่าเริ่มต้น = เดือนล่าสุด)
+ * ติ๊ก "รวมยอดยกมา" เพื่อนับรายการก่อน "ตั้งแต่วันที่" เป็นยอดยกมาด้วย (ยอดสะสม)
+ *
+ * เพื่อให้รองรับข้อมูลจำนวนมาก:
+ * - สร้างดัชนี "บัญชี → รายการ" ครั้งเดียวต่อการโหลด (ไม่ต้องวนทุกรายการซ้ำทุกบัญชี)
+ * - ตารางรายละเอียดของแต่ละบัญชีจะสร้างเมื่อผู้ใช้กดเปิดบัญชีนั้นเท่านั้น
+ */
+import { loadData, onDataRefresh, state } from "../../src/core/store.js";
+import { ACCOUNT_TYPE_LABELS, AMOUNT_EPSILON } from "../../src/accounting/constants.js";
+import { isDebitNormal } from "../../src/accounting/rules.js";
+import { compareAccounts } from "../../src/accounting/accounts.js";
+import { notifyError, notifySuccess } from "../../src/components/notifications.js";
+import { createMonthFilter, getInitialMonthRange } from "../../src/components/month-filter.js";
+import { buildCsv } from "../../src/utils/csv.js";
+import { getFileDateStamp, toIsoDate } from "../../src/utils/date.js";
+import { byId } from "../../src/utils/dom.js";
+import { downloadCsv } from "../../src/utils/download.js";
+import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
+import { debounce } from "../../src/utils/timing.js";
 
-const $ = (id) => document.getElementById(id);
-const typeSelect = $("ledger-type");
-const accountSelect = $("ledger-account");
-const fromInput = $("ledger-from");
-const toInput = $("ledger-to");
-const searchInput = $("ledger-search");
-const hideEmptyInput = $("ledger-hide-empty");
-const ledgerContainer = $("ledger-view");
+const accountTypeSelect = byId("ledger-type");
+const accountSelect = byId("ledger-account");
+const fromDateInput = byId("ledger-from");
+const toDateInput = byId("ledger-to");
+const searchInput = byId("ledger-search");
+const hideInactiveCheckbox = byId("ledger-hide-empty");
+const includeOpeningCheckbox = byId("ledger-include-opening");
+const ledgerContainer = byId("ledger-view");
+const toggleAllButton = byId("ledger-toggle-all");
 
-/** accountId -> [{ entry, line, iso }] sorted by date; built once per load. */
-let postingsByAccount = new Map();
+/**
+ * ดัชนีรายการของแต่ละบัญชี เรียงตามวันที่
+ * @type {Map<string, Array<{ entry: object, line: object, isoDate: string }>>}
+ */
+let postingsByAccountId = new Map();
+
+/** แคชผลคำนวณของแต่ละบัญชีสำหรับตัวกรองปัจจุบัน (ล้างทุกครั้งที่ตัวกรองเปลี่ยน) */
 let ledgerCache = new Map();
 
-function buildIndex() {
-  postingsByAccount = new Map();
+function buildPostingIndex() {
+  postingsByAccountId = new Map();
   state.entries.forEach((entry) => {
-    const iso = toIsoDate(entry.date);
+    const isoDate = toIsoDate(entry.date);
     entry.lines.forEach((line) => {
       if (!line.accountId) return;
-      if (!postingsByAccount.has(line.accountId)) postingsByAccount.set(line.accountId, []);
-      postingsByAccount.get(line.accountId).push({ entry, line, iso });
+      if (!postingsByAccountId.has(line.accountId)) postingsByAccountId.set(line.accountId, []);
+      postingsByAccountId.get(line.accountId).push({ entry, line, isoDate });
     });
   });
-  postingsByAccount.forEach((postings) => postings.sort((left, right) => left.iso.localeCompare(right.iso)));
+  postingsByAccountId.forEach((postings) => postings.sort((left, right) => left.isoDate.localeCompare(right.isoDate)));
 }
 
-function getLedgerGroups(accounts) {
-  const knownTypes = Object.keys(TYPES);
+/** จัดกลุ่มบัญชีตามหมวด (หมวดที่ไม่รู้จักต่อท้าย) */
+function groupAccountsByType(accounts) {
+  const knownTypes = Object.keys(ACCOUNT_TYPE_LABELS);
   const extraTypes = [...new Set(accounts.map((account) => account.type || "other"))].filter((type) => !knownTypes.includes(type));
   return [...knownTypes, ...extraTypes]
     .map((type) => ({
       type,
-      label: TYPES[type] || (type === "other" ? "อื่น ๆ" : type),
+      label: ACCOUNT_TYPE_LABELS[type] || (type === "other" ? "อื่น ๆ" : type),
       accounts: accounts.filter((account) => (account.type || "other") === type).sort(compareAccounts),
     }))
     .filter((group) => group.accounts.length);
 }
 
-function sideOf(account, amount) {
-  if (Math.abs(amount) < AMOUNT_EPSILON) return "";
-  const debitSide = normalDebit(account.type) ? amount > 0 : amount < 0;
-  return debitSide ? "Dr" : "Cr";
-}
-
-function balanceText(account, amount) {
-  return `${fmt(Math.abs(amount))}<span class="side-tag">${sideOf(account, amount)}</span>`;
+/**
+ * ยอดคงเหลือพร้อมป้ายด้าน Dr/Cr
+ * @param {object} account
+ * @param {number} balance ยอดในด้านปกติของบัญชี (ลบ = กลับด้าน)
+ */
+function renderBalance(account, balance) {
+  let side = "";
+  if (Math.abs(balance) >= AMOUNT_EPSILON) {
+    const isDebitSide = isDebitNormal(account.type) ? balance > 0 : balance < 0;
+    side = isDebitSide ? "Dr" : "Cr";
+  }
+  return `${formatMoney(Math.abs(balance))}<span class="side-tag">${side}</span>`;
 }
 
 /**
- * Compute the ledger for one account for the current filters.
- * Running balance is in the account's normal direction (positive = normal side).
+ * คำนวณบัญชีแยกประเภทของบัญชีหนึ่งตามตัวกรองปัจจุบัน
+ * - รายการก่อน "ตั้งแต่วันที่" รวมเป็นยอดยกมา เฉพาะเมื่อติ๊ก "รวมยอดยกมา" (ไม่ติ๊ก = ไม่นับ)
+ * - รายการที่ไม่ตรงคำค้นหาจะไม่แสดง แต่ยังนับในยอดคงเหลือสะสม (ยอดจึงถูกต้องเสมอ)
+ * @returns {{ openingBalance: number, closingBalance: number, totalDebit: number, totalCredit: number,
+ *             rows: Array<{ entry: object, debit: number, credit: number, runningBalance: number }> }}
  */
-function computeLedger(account) {
+function calculateAccountLedger(account) {
   if (ledgerCache.has(account.id)) return ledgerCache.get(account.id);
-  const from = fromInput.value;
-  const to = toInput.value;
-  const needle = searchInput.value.trim().toLowerCase();
-  const sign = normalDebit(account.type) ? 1 : -1;
-  let opening = 0;
-  let running = 0;
+
+  const fromDate = fromDateInput.value;
+  const toDate = toDateInput.value;
+  const searchText = searchInput.value.trim().toLowerCase();
+  const includeOpening = includeOpeningCheckbox.checked;
+  const normalSideSign = isDebitNormal(account.type) ? 1 : -1;
+  let openingBalance = 0;
+  let periodChange = 0;
   let totalDebit = 0;
   let totalCredit = 0;
   const rows = [];
-  (postingsByAccount.get(account.id) || []).forEach(({ entry, line, iso }) => {
+
+  (postingsByAccountId.get(account.id) || []).forEach(({ entry, line, isoDate }) => {
     const debit = Number(line.debit) || 0;
     const credit = Number(line.credit) || 0;
-    const delta = sign * (debit - credit);
-    if (from && iso && iso < from) {
-      opening += delta;
+    const change = normalSideSign * (debit - credit);
+
+    if (fromDate && isoDate && isoDate < fromDate) {
+      if (includeOpening) openingBalance += change;
       return;
     }
-    if (to && iso && iso > to) return;
-    if (needle && !`${entry.desc || ""} ${entry.docNo || ""} ${entry.customerName || ""}`.toLowerCase().includes(needle)) {
-      running += delta;
-      return;
-    }
-    running += delta;
+    if (toDate && isoDate && isoDate > toDate) return;
+
+    periodChange += change;
+    const searchableText = `${entry.desc || ""} ${entry.docNo || ""} ${entry.customerName || ""}`.toLowerCase();
+    if (searchText && !searchableText.includes(searchText)) return;
+
     totalDebit += debit;
     totalCredit += credit;
-    rows.push({ entry, debit, credit, balanceAfter: opening + running });
+    rows.push({ entry, debit, credit, runningBalance: openingBalance + periodChange });
   });
-  const result = { opening, closing: opening + running, totalDebit, totalCredit, rows };
-  ledgerCache.set(account.id, result);
-  return result;
+
+  const ledger = { openingBalance, closingBalance: openingBalance + periodChange, totalDebit, totalCredit, rows };
+  ledgerCache.set(account.id, ledger);
+  return ledger;
 }
 
-function renderAccountBody(account) {
-  const ledger = computeLedger(account);
-  if (!ledger.rows.length && Math.abs(ledger.opening) < AMOUNT_EPSILON) {
-    return '<p class="ledger-empty">ไม่มีความเคลื่อนไหวในช่วงที่เลือก</p>';
-  }
-  const opening = fromInput.value
-    ? `<tr class="opening"><td>${esc(fmtDateDMY(fromInput.value))}</td><td></td><td>ยอดยกมา</td><td></td><td></td><td class="right">${balanceText(account, ledger.opening)}</td></tr>`
+const hasNoActivity = (ledger) => !ledger.rows.length && Math.abs(ledger.openingBalance) < AMOUNT_EPSILON;
+
+/** ตารางรายละเอียดของบัญชี (สร้างเมื่อกดเปิด) */
+function renderAccountDetail(account) {
+  const ledger = calculateAccountLedger(account);
+  if (hasNoActivity(ledger)) return '<p class="ledger-empty">ไม่มีความเคลื่อนไหวในช่วงที่เลือก</p>';
+
+  const openingRow = fromDateInput.value && includeOpeningCheckbox.checked
+    ? `<tr class="opening"><td>${escapeHtml(formatDate(fromDateInput.value))}</td><td></td><td>ยอดยกมา</td><td></td><td></td><td class="right">${renderBalance(account, ledger.openingBalance)}</td></tr>`
     : "";
-  const rows = ledger.rows.map((row) => `<tr><td class="nowrap">${esc(fmtDateDMY(row.entry.date))}</td><td class="code">${esc(row.entry.docNo || "")}</td><td>${esc(row.entry.desc || "")}${row.entry.customerName ? `<span class="cell-sub">${esc(row.entry.customerName)}</span>` : ""}</td><td class="right">${row.debit ? fmt(row.debit) : ""}</td><td class="right">${row.credit ? fmt(row.credit) : ""}</td><td class="right">${balanceText(account, row.balanceAfter)}</td></tr>`).join("");
-  return `<table><thead><tr><th class="col-date">วันที่</th><th style="width:130px">เลขที่</th><th>รายละเอียด</th><th class="right col-amt">เดบิต</th><th class="right col-amt">เครดิต</th><th class="right col-amt">คงเหลือ</th></tr></thead>
-    <tbody>${opening}${rows}</tbody>
-    <tfoot><tr><th colspan="3">รวมความเคลื่อนไหว (${fmtInt(ledger.rows.length)} รายการ)</th><th class="right">${fmt(ledger.totalDebit)}</th><th class="right">${fmt(ledger.totalCredit)}</th><th class="right">${balanceText(account, ledger.closing)}</th></tr></tfoot></table>`;
+  const postingRows = ledger.rows.map((row) => `<tr>
+    <td class="nowrap">${escapeHtml(formatDate(row.entry.date))}</td>
+    <td class="code">${escapeHtml(row.entry.docNo || "")}</td>
+    <td>${escapeHtml(row.entry.desc || "")}${row.entry.customerName ? `<span class="cell-sub">${escapeHtml(row.entry.customerName)}</span>` : ""}</td>
+    <td class="right">${row.debit ? formatMoney(row.debit) : ""}</td>
+    <td class="right">${row.credit ? formatMoney(row.credit) : ""}</td>
+    <td class="right">${renderBalance(account, row.runningBalance)}</td>
+  </tr>`).join("");
+
+  return `<table>
+    <thead><tr><th class="col-date">วันที่</th><th style="width:130px">เลขที่</th><th>รายละเอียด</th><th class="right col-amount">เดบิต</th><th class="right col-amount">เครดิต</th><th class="right col-amount">คงเหลือ</th></tr></thead>
+    <tbody>${openingRow}${postingRows}</tbody>
+    <tfoot><tr><th colspan="3">รวมความเคลื่อนไหว (${formatNumber(ledger.rows.length)} รายการ)</th><th class="right">${formatMoney(ledger.totalDebit)}</th><th class="right">${formatMoney(ledger.totalCredit)}</th><th class="right">${renderBalance(account, ledger.closingBalance)}</th></tr></tfoot>
+  </table>`;
 }
 
-function renderAccount(account, open) {
-  const ledger = computeLedger(account);
-  return `<details class="ledger-account" data-account-id="${esc(account.id)}"${open ? " open" : ""}>
+/** หัวบัญชีแบบพับ/ขยายได้ (<details>) */
+function renderAccountPanel(account, isOpen) {
+  const ledger = calculateAccountLedger(account);
+  return `<details class="ledger-account" data-account-id="${escapeHtml(account.id)}"${isOpen ? " open" : ""}>
     <summary>
-      <span class="ledger-name"><span class="code">${esc(account.code)}</span>${esc(account.name)}</span>
-      <span class="ledger-sum"><small>เดบิต</small>${fmt(ledger.totalDebit)}</span>
-      <span class="ledger-sum"><small>เครดิต</small>${fmt(ledger.totalCredit)}</span>
-      <span class="ledger-sum is-balance"><small>คงเหลือ</small><strong>${balanceText(account, ledger.closing)}</strong></span>
+      <span class="ledger-name"><span class="code">${escapeHtml(account.code)}</span>${escapeHtml(account.name)}</span>
+      <span class="ledger-sum"><small>เดบิต</small>${formatMoney(ledger.totalDebit)}</span>
+      <span class="ledger-sum"><small>เครดิต</small>${formatMoney(ledger.totalCredit)}</span>
+      <span class="ledger-sum is-balance"><small>คงเหลือ</small><strong>${renderBalance(account, ledger.closingBalance)}</strong></span>
     </summary>
-    <div class="ledger-body">${open ? renderAccountBody(account) : ""}</div>
+    <div class="ledger-body">${isOpen ? renderAccountDetail(account) : ""}</div>
   </details>`;
 }
 
-function filteredAccounts() {
-  const type = typeSelect.value;
-  const accountId = accountSelect.value;
+/** บัญชีที่ผ่านตัวกรองหมวด/บัญชี/ซ่อนบัญชีไม่เคลื่อนไหว */
+function getFilteredAccounts() {
+  const selectedType = accountTypeSelect.value;
+  const selectedAccountId = accountSelect.value;
   return state.accounts.filter((account) => {
-    if (type && (account.type || "other") !== type) return false;
-    if (accountId && account.id !== accountId) return false;
-    if (hideEmptyInput.checked && !accountId) {
-      const ledger = computeLedger(account);
-      if (!ledger.rows.length && Math.abs(ledger.opening) < AMOUNT_EPSILON) return false;
-    }
+    if (selectedType && (account.type || "other") !== selectedType) return false;
+    if (selectedAccountId && account.id !== selectedAccountId) return false;
+    if (hideInactiveCheckbox.checked && !selectedAccountId && hasNoActivity(calculateAccountLedger(account))) return false;
     return true;
   });
 }
 
+/**
+ * ยอดคงเหลือรวมของหมวด (ด้านปกติของหมวด เช่น สินทรัพย์ = Dr)
+ * บัญชีปรับมูลค่า เช่น ค่าเสื่อมราคาสะสม จะถูกหักออกโดยอัตโนมัติ เพราะยอดอยู่คนละด้าน
+ */
+function renderGroupBalance(group) {
+  const total = group.accounts.reduce((sum, account) => {
+    const sign = isDebitNormal(account.type) === isDebitNormal(group.type) ? 1 : -1;
+    return sum + sign * calculateAccountLedger(account).closingBalance;
+  }, 0);
+  return renderBalance({ type: group.type }, total);
+}
+
 function renderLedger() {
   ledgerCache = new Map();
-  const from = fromInput.value;
-  const to = toInput.value;
-  if (from && to && from > to) {
-    toastError("วันที่เริ่มต้นต้องไม่มากกว่าวันที่สิ้นสุด");
+  if (fromDateInput.value && toDateInput.value && fromDateInput.value > toDateInput.value) {
+    notifyError("วันที่เริ่มต้นต้องไม่มากกว่าวันที่สิ้นสุด");
     return;
   }
-  const accounts = filteredAccounts();
-  $("ledger-summary").innerHTML = "";
+
+  const accounts = getFilteredAccounts();
   if (!accounts.length) {
     ledgerContainer.innerHTML = state.accounts.length
       ? '<div class="empty-state"><strong>ไม่พบบัญชี</strong>ลองยกเลิก “ซ่อนบัญชีที่ไม่มีความเคลื่อนไหว” หรือเปลี่ยนตัวกรอง</div>'
       : '<div class="empty-state"><strong>ยังไม่มีผังบัญชี</strong><a class="btn" href="../accounts/accounts.html">สร้างผังบัญชี</a></div>';
     return;
   }
-  const openAll = accounts.length === 1;
-  ledgerContainer.innerHTML = getLedgerGroups(accounts).map((group) =>
-    `<section class="ledger-group"><div class="ledger-group-head"><h3><span class="badge type-${esc(group.type)}">${esc(group.label)}</span></h3><span>${fmtInt(group.accounts.length)} บัญชี</span></div>
-      <div class="ledger-group-accounts">${group.accounts.map((account) => renderAccount(account, openAll)).join("")}</div></section>`,
-  ).join("");
-  $("ledger-toggle-all").textContent = openAll ? "ย่อทั้งหมด" : "ขยายทั้งหมด";
+
+  // เลือกบัญชีเดียว → เปิดรายละเอียดให้ทันที
+  const shouldOpenAll = accounts.length === 1;
+  ledgerContainer.innerHTML = groupAccountsByType(accounts).map((group) => `<section class="ledger-group">
+    <div class="ledger-group-head"><h3><span class="badge type-${escapeHtml(group.type)}">${escapeHtml(group.label)}</span></h3>
+      <span>${formatNumber(group.accounts.length)} บัญชี · ยอดคงเหลือรวม <strong>${renderGroupBalance(group)}</strong></span></div>
+    <div class="ledger-group-accounts">${group.accounts.map((account) => renderAccountPanel(account, shouldOpenAll)).join("")}</div>
+  </section>`).join("");
+  toggleAllButton.textContent = shouldOpenAll ? "ย่อทั้งหมด" : "ขยายทั้งหมด";
 }
 
-// Lazily render the posting table when an account is expanded.
-ledgerContainer.addEventListener("toggle", (event) => {
-  const details = event.target;
-  if (!(details instanceof HTMLDetailsElement) || !details.open) return;
-  const body = details.querySelector(".ledger-body");
-  if (body.childElementCount) return;
-  const account = state.accounts.find((item) => item.id === details.dataset.accountId);
-  if (account) body.innerHTML = renderAccountBody(account);
-}, true);
+/** สร้างตัวเลือกหมวด/บัญชี (รายการบัญชีกรองตามหมวดที่เลือก) แล้ววาดใหม่ */
+function renderFilterOptions() {
+  const groups = groupAccountsByType(state.accounts);
+  const selectedType = accountTypeSelect.value;
+  const selectedAccountId = accountSelect.value;
 
-function renderFilters() {
-  const groups = getLedgerGroups(state.accounts);
-  const currentType = typeSelect.value;
-  const currentAccount = accountSelect.value;
-  typeSelect.innerHTML = '<option value="">ทุกหมวด</option>' + groups.map((group) => `<option value="${esc(group.type)}">${esc(group.label)}</option>`).join("");
-  typeSelect.value = groups.some((group) => group.type === currentType) ? currentType : "";
-  const availableGroups = typeSelect.value ? groups.filter((group) => group.type === typeSelect.value) : groups;
-  const accounts = availableGroups.flatMap((group) => group.accounts);
-  accountSelect.innerHTML = `<option value="">${typeSelect.value ? "ทุกบัญชีในหมวดนี้" : "ทุกบัญชี"}</option>` +
-    availableGroups.map((group) => `<optgroup label="${esc(group.label)}">${group.accounts.map((account) => `<option value="${esc(account.id)}">${esc(account.code)} · ${esc(account.name)}</option>`).join("")}</optgroup>`).join("");
-  accountSelect.value = accounts.some((account) => account.id === currentAccount) ? currentAccount : "";
+  accountTypeSelect.innerHTML = '<option value="">ทุกหมวด</option>'
+    + groups.map((group) => `<option value="${escapeHtml(group.type)}">${escapeHtml(group.label)}</option>`).join("");
+  accountTypeSelect.value = groups.some((group) => group.type === selectedType) ? selectedType : "";
+
+  const visibleGroups = accountTypeSelect.value ? groups.filter((group) => group.type === accountTypeSelect.value) : groups;
+  const visibleAccounts = visibleGroups.flatMap((group) => group.accounts);
+  accountSelect.innerHTML = `<option value="">${accountTypeSelect.value ? "ทุกบัญชีในหมวดนี้" : "ทุกบัญชี"}</option>`
+    + visibleGroups.map((group) => `<optgroup label="${escapeHtml(group.label)}">${group.accounts
+      .map((account) => `<option value="${escapeHtml(account.id)}">${escapeHtml(account.code)} · ${escapeHtml(account.name)}</option>`).join("")}</optgroup>`).join("");
+  accountSelect.value = visibleAccounts.some((account) => account.id === selectedAccountId) ? selectedAccountId : "";
   renderLedger();
 }
 
-$("ledger-toggle-all").addEventListener("click", () => {
-  const items = [...ledgerContainer.querySelectorAll("details.ledger-account")];
-  const shouldOpen = items.some((item) => !item.open);
-  if (shouldOpen && items.length > 60) toastSuccess(`กำลังขยาย ${fmtInt(items.length)} บัญชี`);
-  items.forEach((item) => { item.open = shouldOpen; });
-  $("ledger-toggle-all").textContent = shouldOpen ? "ย่อทั้งหมด" : "ขยายทั้งหมด";
-});
+function toggleAllAccounts() {
+  const panels = [...ledgerContainer.querySelectorAll("details.ledger-account")];
+  const shouldOpen = panels.some((panel) => !panel.open);
+  if (shouldOpen && panels.length > 60) notifySuccess(`กำลังขยาย ${formatNumber(panels.length)} บัญชี`);
+  panels.forEach((panel) => { panel.open = shouldOpen; });
+  toggleAllButton.textContent = shouldOpen ? "ย่อทั้งหมด" : "ขยายทั้งหมด";
+}
 
-$("ledger-export").addEventListener("click", () => {
-  const accounts = filteredAccounts().sort(compareAccounts);
+function exportCsv() {
   const rows = [];
-  accounts.forEach((account) => {
-    const ledger = computeLedger(account);
-    if (fromInput.value) rows.push([account.code, account.name, fmtDateDMY(fromInput.value), "", "ยอดยกมา", "", "", ledger.opening]);
-    ledger.rows.forEach((row) => rows.push([account.code, account.name, fmtDateDMY(row.entry.date), row.entry.docNo || "", row.entry.desc || "", row.debit, row.credit, row.balanceAfter]));
+  getFilteredAccounts().sort(compareAccounts).forEach((account) => {
+    const ledger = calculateAccountLedger(account);
+    if (fromDateInput.value && includeOpeningCheckbox.checked) {
+      rows.push([account.code, account.name, formatDate(fromDateInput.value), "", "ยอดยกมา", "", "", ledger.openingBalance]);
+    }
+    ledger.rows.forEach((row) => rows.push([
+      account.code, account.name, formatDate(row.entry.date), row.entry.docNo || "", row.entry.desc || "",
+      row.debit, row.credit, row.runningBalance,
+    ]));
   });
-  if (!rows.length) return toastError("ไม่มีข้อมูลให้ส่งออก");
-  downloadCsvFile(`ledger-${fileStamp()}.csv`, toCsv(["รหัสบัญชี", "ชื่อบัญชี", "วันที่", "เลขที่เอกสาร", "รายละเอียด", "เดบิต", "เครดิต", "คงเหลือ (ด้านปกติ)"], rows));
-  toastSuccess("ส่งออกบัญชีแยกประเภทเรียบร้อย");
-});
+  if (!rows.length) {
+    notifyError("ไม่มีข้อมูลให้ส่งออก");
+    return;
+  }
+  const headers = ["รหัสบัญชี", "ชื่อบัญชี", "วันที่", "เลขที่เอกสาร", "รายละเอียด", "เดบิต", "เครดิต", "คงเหลือ (ด้านปกติ)"];
+  downloadCsv(`ledger-${getFileDateStamp()}.csv`, buildCsv(headers, rows));
+  notifySuccess("ส่งออกบัญชีแยกประเภทเรียบร้อย");
+}
 
-typeSelect.addEventListener("change", renderFilters);
+// สร้างตารางรายละเอียดเมื่อเปิดบัญชี (อีเวนต์ toggle ไม่ bubble จึงต้องดักในช่วง capture)
+ledgerContainer.addEventListener("toggle", (event) => {
+  const panel = event.target;
+  if (!(panel instanceof HTMLDetailsElement) || !panel.open) return;
+  const detailContainer = panel.querySelector(".ledger-body");
+  if (detailContainer.childElementCount) return;
+  const account = state.accounts.find((item) => item.id === panel.dataset.accountId);
+  if (account) detailContainer.innerHTML = renderAccountDetail(account);
+}, true);
+
+toggleAllButton.addEventListener("click", toggleAllAccounts);
+byId("ledger-export").addEventListener("click", exportCsv);
+accountTypeSelect.addEventListener("change", renderFilterOptions);
 accountSelect.addEventListener("change", renderLedger);
-fromInput.addEventListener("change", renderLedger);
-toInput.addEventListener("change", renderLedger);
-hideEmptyInput.addEventListener("change", renderLedger);
+fromDateInput.addEventListener("change", renderLedger);
+toDateInput.addEventListener("change", renderLedger);
+hideInactiveCheckbox.addEventListener("change", renderLedger);
+includeOpeningCheckbox.addEventListener("change", renderLedger);
 searchInput.addEventListener("input", debounce(renderLedger, 200));
 
-if (await load(["accounts", "entries"])) {
-  onDataRefresh(() => {
-    buildIndex();
-    renderFilters();
+if (await loadData(["accounts", "entries"])) {
+  const monthFilter = createMonthFilter({
+    fromInput: fromDateInput,
+    toInput: toDateInput,
+    getRecords: () => state.entries,
+    onSelect: renderLedger,
   });
-  buildIndex();
-  const preset = new URLSearchParams(location.search).get("account");
-  renderFilters();
-  if (preset && state.accounts.some((account) => account.id === preset)) {
-    accountSelect.value = preset;
+  // ค่าเริ่มต้น: เดือนล่าสุดที่มีรายการ (ยอดคงเหลือนับเฉพาะเดือนนี้ ไม่รวมยอดยกมา)
+  // เดือนที่เลือกไว้ในหน้าอื่น (ถ้ามี) ไม่เช่นนั้นเดือนล่าสุดที่มีรายการ
+  const latestMonth = getInitialMonthRange(state.entries);
+  fromDateInput.value = latestMonth.from;
+  toDateInput.value = latestMonth.to;
+  buildPostingIndex();
+  renderFilterOptions();
+
+  // ลิงก์จากหน้าอื่น เช่น ledger.html?account=<id> → เปิดบัญชีนั้นทันที
+  const requestedAccountId = new URLSearchParams(location.search).get("account");
+  if (requestedAccountId && state.accounts.some((account) => account.id === requestedAccountId)) {
+    accountSelect.value = requestedAccountId;
     renderLedger();
   }
+  onDataRefresh(() => {
+    monthFilter.refresh();
+    buildPostingIndex();
+    renderFilterOptions();
+  });
 }

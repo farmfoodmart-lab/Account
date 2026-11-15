@@ -1,568 +1,448 @@
 /**
- * Shared page logic for the receivables (ลูกหนี้) and payables (เจ้าหนี้) subledgers.
- * Documents and their settlements post to the general ledger automatically.
+ * @file หน้าทะเบียนลูกหนี้/เจ้าหนี้ (ใช้ร่วมกันทั้งสองหน้า)
+ *
+ * ข้อมูลทั้งหมดดึงมาจากสมุดรายวันทั่วไป (ดู src/accounting/subledger.js) — ไม่มีฟอร์มเพิ่มลูกหนี้/เจ้าหนี้แยก
+ * หน้านี้ทำได้:
+ * - ดูยอดคงค้าง อายุหนี้ สรุปรายคู่ค้า และประวัติการชำระของแต่ละเอกสาร
+ * - รับชำระ/จ่ายชำระ: สร้างรายการในสมุดรายวันให้ (Dr เงินสด / Cr ลูกหนี้ หรือ Dr เจ้าหนี้ / Cr เงินสด)
+ * - ย้ายข้อมูลลูกหนี้/เจ้าหนี้ที่บันทึกด้วยระบบเดิม ให้มาอยู่ในสมุดรายวัน (ครั้งเดียว)
  */
+import { commitChanges, loadData, onDataRefresh, state } from "../core/store.js";
+import { AMOUNT_EPSILON } from "../accounting/constants.js";
+import { findAccountForRole, formatAccountLabel } from "../accounting/accounts.js";
+import { findCustomerById, formatCustomerLabel } from "../accounting/customers.js";
+import { getLockedPeriodMessage, isDateLocked } from "../accounting/journal.js";
+import { buildAgingBuckets } from "../accounting/statements.js";
 import {
-  AMOUNT_EPSILON,
-  accountLabel,
-  accountOptionsHtml,
-  customerLabel,
-  esc,
-  fmt,
-  fmtDateDMY,
-  fmtInt,
-  getAccount,
-  getCustomer,
-  isLocked,
-  load,
-  lockMessage,
-  nextSeqNo,
-  onDataRefresh,
-  replaceState,
-  roleAccount,
-  save,
-  state,
-  uid,
-} from "../js/data.js";
-import {
-  confirmAction,
-  debounce,
-  downloadCsvFile,
-  fileStamp,
-  formDialog,
-  todayIso,
-  toast,
-  toastError,
-  toastSuccess,
-} from "../js/ui.js";
-import { accountNet, collectTotals, receivableAging, toIsoDate } from "../js/reports.js";
-import { toCsv } from "../js/csv.js";
-import {
-  cashAccountOptions,
-  computeVat,
-  docAmounts,
-  documentLines,
-  linkedEntryIds,
-  round2,
-  settlementLines,
-  sortEntries,
-  upsertEntry,
-} from "../js/posting.js";
+  buildDocumentLines,
+  buildSettlementLines,
+  getCashAccountOptions,
+  roundMoney,
+  sortEntriesByDate,
+  upsertJournalEntry,
+} from "../accounting/posting.js";
+import { buildSubledger } from "../accounting/subledger.js";
+import { notifyError, notifySuccess } from "./notifications.js";
+import { formDialog } from "./dialogs.js";
+import { buildCsv } from "../utils/csv.js";
+import { daysBetween, getFileDateStamp, getTodayIso, toIsoDate } from "../utils/date.js";
+import { byId } from "../utils/dom.js";
+import { downloadCsv } from "../utils/download.js";
+import { escapeHtml, formatDate, formatMoney, formatNumber } from "../utils/format.js";
+import { debounce } from "../utils/timing.js";
 
-const CONFIGS = {
+/** ข้อความที่ต่างกันระหว่างหน้าลูกหนี้กับหน้าเจ้าหนี้ */
+const PAGE_SETTINGS = {
   receivable: {
-    dataKey: "receivables",
-    extraKeys: ["customers"],
-    docCode: "INV",
+    legacyCollection: "receivables",
     noun: "ลูกหนี้",
-    partyNoun: "ลูกค้า",
+    controlAccountName: "ลูกหนี้การค้า",
     settleVerb: "รับชำระ",
     settledLabel: "รับชำระแล้ว",
-    controlRole: "receivable",
-    counterType: "revenue",
-    counterRole: "revenue",
-    docDesc: "ขายเชื่อ",
-    settleDesc: "รับชำระหนี้",
+    documentDescription: "ขายเชื่อ",
+    settlementDescription: "รับชำระหนี้",
+    cashFieldLabel: "รับเงินเข้าบัญชี",
   },
   payable: {
-    dataKey: "payables",
-    extraKeys: ["incomingDocs"],
-    docCode: "AP",
+    legacyCollection: "payables",
     noun: "เจ้าหนี้",
-    partyNoun: "ผู้ขาย/ซัพพลายเออร์",
+    controlAccountName: "เจ้าหนี้การค้า",
     settleVerb: "จ่ายชำระ",
     settledLabel: "จ่ายแล้ว",
-    controlRole: "payable",
-    counterType: "expense",
-    counterRole: "expense",
-    docDesc: "ซื้อเชื่อ/ค่าใช้จ่ายค้างจ่าย",
-    settleDesc: "จ่ายชำระหนี้",
+    documentDescription: "ซื้อเชื่อ",
+    settlementDescription: "จ่ายชำระหนี้",
+    cashFieldLabel: "จ่ายเงินจากบัญชี",
   },
 };
 
-export async function initSubledger(kind) {
-  const cfg = CONFIGS[kind];
-  const $ = (id) => document.getElementById(id);
-  const form = $("sl-form");
-  const tableBody = document.querySelector("#sl-table tbody");
-  let editingId = null;
+const AGING_COLORS = ["var(--success)", "var(--warning)", "#d9822b", "var(--type-liability)", "var(--danger)"];
+const STATUS_FILTER_LABELS = { open: "ค้างชำระทั้งหมด", overdue: "เกินกำหนด", paid: "ชำระครบแล้ว", all: "ทั้งหมด" };
+
+/**
+ * เริ่มต้นหน้าทะเบียน
+ * @param {"receivable" | "payable"} subledgerType
+ */
+export async function initSubledgerPage(subledgerType) {
+  const settings = PAGE_SETTINGS[subledgerType];
+  const tableBody = document.querySelector("#subledger-table tbody");
+
+  /** ตัวกรองสถานะ: open | overdue | paid | all */
   let statusFilter = "open";
-  let expandedId = null;
+  /** entryId ของเอกสารที่เปิดดูประวัติการชำระอยู่ */
+  let expandedEntryId = null;
+  /** ทะเบียนที่คำนวณล่าสุด (คำนวณใหม่ทุกครั้งที่วาดหน้า) */
+  let subledger = { controlAccount: null, documents: [], parties: [] };
 
-  const records = () => state[cfg.dataKey];
-  const remainingOf = (record) => Math.max(0, round2(docAmounts(record).total - (Number(record.paid) || 0)));
+  /** @returns {"paid" | "overdue" | "pending"} */
+  function getStatus(subledgerDocument, today) {
+    if (subledgerDocument.outstanding < AMOUNT_EPSILON) return "paid";
+    return subledgerDocument.due && subledgerDocument.due < today ? "overdue" : "pending";
+  }
 
-  function partyName(record) {
-    if (kind === "receivable") {
-      const customer = getCustomer(record.customerId);
-      return customer ? customerLabel(customer) : record.customerName || "-";
+  const getDaysOverdue = (subledgerDocument, today) =>
+    (subledgerDocument.due ? Math.max(0, daysBetween(subledgerDocument.due, today)) : 0);
+
+  const findDocument = (entryId) => subledger.documents.find((item) => item.entryId === entryId);
+
+  /* ---------------------------------------------------------------- */
+  /* การ์ดสรุป อายุหนี้ และสรุปรายคู่ค้า                                  */
+  /* ---------------------------------------------------------------- */
+
+  function renderSummaryCards(today) {
+    const { documents } = subledger;
+    const totalAmount = documents.reduce((total, item) => total + item.amount, 0);
+    const totalPaid = documents.reduce((total, item) => total + item.paid, 0);
+    const totalOutstanding = documents.reduce((total, item) => total + item.outstanding, 0);
+    const overdueDocuments = documents.filter((item) => getStatus(item, today) === "overdue");
+    const overdueAmount = overdueDocuments.reduce((total, item) => total + item.outstanding, 0);
+    const settledPercent = totalAmount > AMOUNT_EPSILON ? (totalPaid / totalAmount) * 100 : 0;
+
+    byId("subledger-summary").innerHTML = `
+      <div class="stat"><div class="muted">ยอด${settings.noun}รวม</div><div class="stat-value">${formatMoney(totalAmount)}</div><div class="stat-sub">${formatNumber(documents.length)} เอกสาร</div></div>
+      <div class="stat accent-revenue"><div class="muted">${settings.settledLabel}</div><div class="stat-value">${formatMoney(totalPaid)}</div><div class="stat-sub">${settledPercent.toFixed(1)}% ของยอดรวม</div></div>
+      <div class="stat accent-asset"><div class="muted">คงค้าง</div><div class="stat-value">${formatMoney(totalOutstanding)}</div><div class="stat-sub">${escapeHtml(formatAccountLabel(subledger.controlAccount))}</div></div>
+      <div class="stat${overdueDocuments.length ? " is-alert" : ""}"><div class="muted">เกินกำหนด</div><div class="stat-value ${overdueDocuments.length ? "unbalanced" : ""}">${formatMoney(overdueAmount)}</div><div class="stat-sub">${formatNumber(overdueDocuments.length)} เอกสาร</div></div>`;
+  }
+
+  function renderAging(today) {
+    const buckets = buildAgingBuckets(subledger.documents.map((item) => ({ amount: item.amount, paid: item.paid, due: item.due })), today);
+    const agingTotal = buckets.reduce((total, bucket) => total + bucket.amount, 0);
+    if (agingTotal < AMOUNT_EPSILON) {
+      byId("subledger-aging").innerHTML = "";
+      return;
     }
-    return record.vendorName || "-";
+    const meterSegments = buckets.map((bucket, index) => (bucket.amount > 0
+      ? `<span style="width:${(bucket.amount / agingTotal) * 100}%;background:${AGING_COLORS[index]}" title="${escapeHtml(bucket.label)} ${formatMoney(bucket.amount)}"></span>`
+      : "")).join("");
+    const bucketCards = buckets.map((bucket, index) => `<div>
+      <small><span class="legend-dot" style="background:${AGING_COLORS[index]}"></span>${escapeHtml(bucket.label)}</small>
+      <strong>${formatMoney(bucket.amount)}</strong> <span class="muted">(${formatNumber(bucket.count)})</span>
+    </div>`).join("");
+    byId("subledger-aging").innerHTML = `<div class="card">
+      <div class="card-head"><h3>วิเคราะห์อายุ${settings.noun}</h3><span class="muted">ณ วันที่ ${escapeHtml(formatDate(today))}</span></div>
+      <div class="meter">${meterSegments}</div>
+      <div class="info-grid" style="margin-top:12px">${bucketCards}</div>
+    </div>`;
   }
 
-  function statusOf(record, today) {
-    if (remainingOf(record) <= AMOUNT_EPSILON) return "paid";
-    const due = toIsoDate(record.due);
-    return due && due < today ? "overdue" : "pending";
+  function renderPartySummary() {
+    const partyRows = subledger.parties.map((party) => `<tr>
+      <td>${escapeHtml(party.partyName)}</td>
+      <td class="right">${formatNumber(party.documentCount)}</td>
+      <td class="right">${formatMoney(party.invoiced)}</td>
+      <td class="right">${formatMoney(party.paid)}</td>
+      <td class="right"><strong>${formatMoney(party.outstanding)}</strong></td>
+      <td class="right">${party.unappliedCredit ? formatMoney(party.unappliedCredit) : "-"}</td>
+    </tr>`).join("");
+    document.querySelector("#subledger-parties tbody").innerHTML = partyRows || '<tr><td colspan="6" class="muted">ยังไม่มีข้อมูล</td></tr>';
+    byId("subledger-parties-count").textContent = `${formatNumber(subledger.parties.length)} ราย`;
   }
 
-  function daysOverdue(record, today) {
-    const due = toIsoDate(record.due);
-    return due ? Math.max(0, Math.floor((Date.parse(today) - Date.parse(due)) / 86400000)) : 0;
-  }
+  /* ---------------------------------------------------------------- */
+  /* ตารางเอกสาร                                                        */
+  /* ---------------------------------------------------------------- */
 
-  /* ---------- form ---------- */
-  function renderPartyOptions() {
-    if (kind === "receivable") {
-      const select = $("sl-party");
-      const current = select.value;
-      select.innerHTML = state.customers.length
-        ? '<option value="">-- เลือกลูกค้า --</option>' + state.customers.map((customer) => `<option value="${esc(customer.id)}">${esc(customerLabel(customer))}</option>`).join("")
-        : '<option value="">ยังไม่มีลูกค้าในทะเบียน — เพิ่มที่หน้ารายชื่อลูกค้า</option>';
-      if (current) select.value = current;
-    } else {
-      const names = new Set();
-      state.payables.forEach((record) => record.vendorName && names.add(record.vendorName));
-      state.incomingDocs.forEach((record) => record.supplier && names.add(String(record.supplier).trim()));
-      $("sl-vendors").innerHTML = [...names].sort((a, b) => a.localeCompare(b, "th")).map((name) => `<option value="${esc(name)}"></option>`).join("");
-    }
-  }
-
-  function renderCounterOptions(selected = "") {
-    const select = $("sl-counter");
-    const fallback = roleAccount(cfg.counterRole);
-    select.innerHTML = accountOptionsHtml(selected || fallback?.id || "", "-- เลือกบัญชี --");
-  }
-
-  function updateAmounts() {
-    const { vat, total } = computeVat($("sl-net").value, $("sl-vat-rate").value);
-    $("sl-vat").value = fmt(vat);
-    $("sl-total").value = fmt(total);
-  }
-
-  function setPostedState(record) {
-    const postBox = $("sl-post");
-    const note = $("sl-post-note");
-    if (record && record.entryId) {
-      const entry = state.entries.find((item) => item.id === record.entryId);
-      postBox.checked = true;
-      postBox.disabled = true;
-      note.innerHTML = `ลงบัญชีแล้ว${entry ? ` <a href="../journal/journal.html">${esc(entry.docNo || "")}</a>` : ""} — แก้ไขเอกสารนี้จะปรับรายการบัญชีให้อัตโนมัติ`;
-    } else {
-      postBox.disabled = false;
-      postBox.checked = !record;
-      note.textContent = kind === "receivable"
-        ? "Dr ลูกหนี้การค้า / Cr รายได้ และภาษีขาย"
-        : "Dr ค่าใช้จ่าย และภาษีซื้อ / Cr เจ้าหนี้การค้า";
-    }
-  }
-
-  function resetForm() {
-    editingId = null;
-    form.reset();
-    form.classList.remove("is-editing");
-    $("sl-form-title").textContent = `เพิ่ม${cfg.noun}`;
-    $("sl-submit").textContent = `เพิ่ม${cfg.noun}`;
-    $("sl-cancel").hidden = true;
-    $("sl-date").value = todayIso();
-    $("sl-vat-rate").value = "0";
-    renderCounterOptions();
-    setPostedState(null);
-    updateAmounts();
-  }
-
-  function fillForm(record) {
-    editingId = record.id;
-    renderPartyOptions();
-    if (kind === "receivable") $("sl-party").value = record.customerId || "";
-    else {
-      $("sl-party").value = record.vendorName || "";
-      $("sl-party-tax").value = record.vendorTaxId || "";
-    }
-    const { net } = docAmounts(record);
-    $("sl-docno").value = record.docNo || "";
-    $("sl-date").value = toIsoDate(record.date) || "";
-    $("sl-due").value = toIsoDate(record.due) || "";
-    $("sl-net").value = net || "";
-    $("sl-vat-rate").value = String(record.vatRate || 0);
-    if (![...$("sl-vat-rate").options].some((option) => option.value === String(record.vatRate || 0))) $("sl-vat-rate").value = "0";
-    $("sl-note").value = record.note || "";
-    renderCounterOptions(record.counterAccountId);
-    setPostedState(record);
-    updateAmounts();
-    form.classList.add("is-editing");
-    $("sl-form-title").textContent = `แก้ไข${cfg.noun} ${record.docNo || ""}`;
-    $("sl-submit").textContent = "บันทึกการแก้ไข";
-    $("sl-cancel").hidden = false;
-    form.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  /* ---------- summary ---------- */
-  function renderSummary(today) {
-    const list = records();
-    const total = list.reduce((sum, record) => sum + docAmounts(record).total, 0);
-    const paid = list.reduce((sum, record) => sum + (Number(record.paid) || 0), 0);
-    const outstanding = list.reduce((sum, record) => sum + remainingOf(record), 0);
-    const overdue = list.filter((record) => statusOf(record, today) === "overdue");
-    const overdueAmount = overdue.reduce((sum, record) => sum + remainingOf(record), 0);
-    const settledPct = total > AMOUNT_EPSILON ? (paid / total) * 100 : 0;
-    $("sl-summary").innerHTML = `
-      <div class="stat"><div class="muted">ยอด${cfg.noun}รวม</div><div class="stat-value">${fmt(total)}</div><div class="stat-sub">${fmtInt(list.length)} เอกสาร</div></div>
-      <div class="stat accent-revenue"><div class="muted">${cfg.settledLabel}</div><div class="stat-value">${fmt(paid)}</div><div class="stat-sub">${settledPct.toFixed(1)}% ของยอดรวม</div></div>
-      <div class="stat accent-asset"><div class="muted">คงค้าง</div><div class="stat-value">${fmt(outstanding)}</div><div class="stat-sub">รอ${cfg.settleVerb}</div></div>
-      <div class="stat${overdue.length ? " is-alert" : ""}"><div class="muted">เกินกำหนด</div><div class="stat-value ${overdue.length ? "unbalanced" : ""}">${fmt(overdueAmount)}</div><div class="stat-sub">${fmtInt(overdue.length)} เอกสาร</div></div>`;
-
-    // Reconciliation: subledger outstanding vs. the control account in the general ledger.
-    const control = roleAccount(cfg.controlRole);
-    const recon = $("sl-recon");
-    if (!control) {
-      recon.innerHTML = `<div class="banner warn">ยังไม่พบบัญชีคุม${cfg.noun} — <a href="../settings/settings.html">กำหนดบัญชีที่หน้าการตั้งค่า</a> หรือเพิ่มผังบัญชีมาตรฐาน</div>`;
-    } else {
-      const glBalance = accountNet(control, collectTotals(state.entries));
-      const unposted = list.filter((record) => !record.entryId);
-      const difference = round2(glBalance - outstanding);
-      const ok = Math.abs(difference) < AMOUNT_EPSILON;
-      recon.innerHTML = `<div class="banner ${ok ? "ok" : "warn"}">
-        <strong>${ok ? "✓ กระทบยอดตรงกัน" : "กระทบยอดไม่ตรงกัน"}</strong>
-        <span>บัญชีคุม ${esc(accountLabel(control))} ${fmt(glBalance)} · ทะเบียน${cfg.noun}คงค้าง ${fmt(outstanding)}${ok ? "" : ` · ผลต่าง ${fmt(Math.abs(difference))}`}</span>
-        ${unposted.length ? `<span class="muted" style="margin-left:auto">${fmtInt(unposted.length)} เอกสารยังไม่ลงบัญชี — กดปุ่ม “ลงบัญชี” ในตาราง</span>` : ""}
-      </div>`;
-    }
-
-    const buckets = receivableAging(list.map((record) => ({ ...record, amount: docAmounts(record).total })), today);
-    const agingTotal = buckets.reduce((sum, bucket) => sum + bucket.amount, 0);
-    const colors = ["var(--success)", "var(--warning)", "#d9822b", "var(--type-liability)", "var(--danger)"];
-    $("sl-aging").innerHTML = agingTotal > AMOUNT_EPSILON ? `<div class="card">
-      <div class="card-head"><h3>วิเคราะห์อายุ${cfg.noun}</h3><span class="muted">ณ วันที่ ${esc(fmtDateDMY(today))}</span></div>
-      <div class="meter">${buckets.map((bucket, index) => bucket.amount > 0 ? `<span style="width:${(bucket.amount / agingTotal) * 100}%;background:${colors[index]}" title="${esc(bucket.label)} ${fmt(bucket.amount)}"></span>` : "").join("")}</div>
-      <div class="kv" style="margin-top:12px">${buckets.map((bucket, index) => `<div><small><span class="legend-dot" style="background:${colors[index]}"></span>${esc(bucket.label)}</small><strong>${fmt(bucket.amount)}</strong> <span class="muted">(${fmtInt(bucket.count)})</span></div>`).join("")}</div>
-    </div>` : "";
-  }
-
-  function renderChips(today) {
-    const counts = { open: 0, overdue: 0, paid: 0, all: records().length };
-    records().forEach((record) => {
-      const status = statusOf(record, today);
+  function renderStatusChips(today) {
+    const counts = { open: 0, overdue: 0, paid: 0, all: subledger.documents.length };
+    subledger.documents.forEach((item) => {
+      const status = getStatus(item, today);
       if (status === "paid") counts.paid += 1;
       else counts.open += 1;
       if (status === "overdue") counts.overdue += 1;
     });
-    const labels = { open: "ค้างชำระทั้งหมด", overdue: "เกินกำหนด", paid: "ชำระครบแล้ว", all: "ทั้งหมด" };
-    $("sl-status-filter").innerHTML = Object.entries(labels).map(([key, label]) =>
-      `<button type="button" class="chip" data-status="${key}" aria-pressed="${statusFilter === key}">${label}<span class="count">${fmtInt(counts[key])}</span></button>`).join("");
+    byId("subledger-status-filter").innerHTML = Object.entries(STATUS_FILTER_LABELS).map(([status, label]) =>
+      `<button type="button" class="chip" data-status="${status}" aria-pressed="${statusFilter === status}">${label}<span class="count">${formatNumber(counts[status])}</span></button>`).join("");
   }
 
-  function visibleRecords(today) {
-    const needle = $("sl-search").value.trim().toLowerCase();
-    return records().filter((record) => {
-      const status = statusOf(record, today);
+  function getVisibleDocuments(today) {
+    const searchText = byId("subledger-search").value.trim().toLowerCase();
+    return subledger.documents.filter((item) => {
+      const status = getStatus(item, today);
       if (statusFilter === "open" && status === "paid") return false;
       if (statusFilter === "overdue" && status !== "overdue") return false;
       if (statusFilter === "paid" && status !== "paid") return false;
-      return !needle || `${partyName(record)} ${record.docNo || ""} ${record.note || ""}`.toLowerCase().includes(needle);
+      return !searchText || `${item.partyName} ${item.docNo} ${item.desc}`.toLowerCase().includes(searchText);
     });
   }
 
-  function historyRow(record) {
-    const payments = record.payments || [];
-    const rows = payments.map((payment) => {
-      const entry = payment.entryId ? state.entries.find((item) => item.id === payment.entryId) : null;
-      return `<tr><td>${esc(fmtDateDMY(payment.date))}</td><td>${esc(accountLabel(getAccount(payment.accountId)))}</td><td class="right">${fmt(payment.amount)}</td><td>${entry ? `<span class="badge success">${esc(entry.docNo || "ลงบัญชีแล้ว")}</span>` : '<span class="badge">ไม่ลงบัญชี</span>'}</td>
-        <td class="actions-cell"><button type="button" class="small danger" data-delete-payment="${esc(record.id)}|${esc(payment.id)}">ลบ</button></td></tr>`;
-    }).join("");
-    const legacyPaid = round2((Number(record.paid) || 0) - payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0));
-    return `<tr class="history-row"><td colspan="9"><div class="history">
-      <strong>ประวัติ${cfg.settleVerb}</strong>
-      ${rows || legacyPaid > AMOUNT_EPSILON ? `<table><thead><tr><th>วันที่</th><th>บัญชี</th><th class="right">จำนวนเงิน</th><th>รายการบัญชี</th><th></th></tr></thead><tbody>${rows}
-        ${legacyPaid > AMOUNT_EPSILON ? `<tr><td colspan="2" class="muted" style="padding:8px 14px;text-align:left">ยอดชำระยกมา (ก่อนใช้ระบบเชื่อมบัญชี)</td><td class="right">${fmt(legacyPaid)}</td><td colspan="2"></td></tr>` : ""}</tbody></table>` : '<p class="muted">ยังไม่มีการชำระ</p>'}
-    </div></td></tr>`;
+  function renderStatusBadge(item, status, today) {
+    if (status === "paid") return '<span class="badge success dot">ชำระครบ</span>';
+    if (status === "overdue") return `<span class="badge danger dot">เกินกำหนด ${formatNumber(getDaysOverdue(item, today))} วัน</span>`;
+    return item.paid > 0 ? '<span class="badge info dot">ชำระบางส่วน</span>' : '<span class="badge warning dot">รอชำระ</span>';
   }
 
-  function renderTable() {
-    const today = todayIso();
-    renderSummary(today);
-    renderChips(today);
-    if (!records().length) {
-      tableBody.innerHTML = `<tr><td colspan="9" class="muted">ยังไม่มีรายการ${cfg.noun}</td></tr>`;
+  /** ลิงก์ไปสมุดรายวัน โดยค้นหาเลขที่เอกสารให้ */
+  const journalLink = (documentNumber) =>
+    `<a href="../journal/journal.html?q=${encodeURIComponent(documentNumber)}" title="ดูรายการในสมุดรายวัน">${escapeHtml(documentNumber || "-")}</a>`;
+
+  function renderPaymentHistoryRow(item) {
+    const paymentRows = item.payments.map((payment) => `<tr>
+      <td>${escapeHtml(formatDate(payment.date))}</td>
+      <td>${journalLink(payment.docNo)}</td>
+      <td class="right">${formatMoney(payment.amount)}</td>
+    </tr>`).join("");
+    const historyTable = paymentRows
+      ? `<table><thead><tr><th>วันที่</th><th>รายการในสมุดรายวัน</th><th class="right">จำนวนเงิน</th></tr></thead><tbody>${paymentRows}</tbody></table>`
+      : '<p class="muted">ยังไม่มีการชำระ</p>';
+    return `<tr class="history-row"><td colspan="9"><div class="history"><strong>ประวัติ${settings.settleVerb}</strong>${historyTable}</div></td></tr>`;
+  }
+
+  function renderDocumentRow(item, today) {
+    const status = getStatus(item, today);
+    const isExpanded = expandedEntryId === item.entryId;
+    const historyToggle = item.payments.length
+      ? `<span class="cell-sub"><button type="button" class="link-button" data-history="${escapeHtml(item.entryId)}">${isExpanded ? "ซ่อนประวัติ" : `ประวัติ (${formatNumber(item.payments.length)})`}</button></span>`
+      : "";
+    const settleButton = status !== "paid"
+      ? `<button type="button" class="small" data-settle="${escapeHtml(item.entryId)}">${settings.settleVerb}</button>`
+      : "";
+    const mainRow = `<tr${isExpanded ? ' class="is-expanded"' : ""}>
+      <td>${escapeHtml(item.partyName)}<span class="cell-sub">${escapeHtml(item.desc)}</span></td>
+      <td class="nowrap">${journalLink(item.docNo)}</td>
+      <td class="nowrap">${escapeHtml(formatDate(item.date))}</td>
+      <td class="nowrap">${escapeHtml(item.due ? formatDate(item.due) : "-")}</td>
+      <td class="right">${formatMoney(item.amount)}</td>
+      <td class="right">${formatMoney(item.paid)}${historyToggle}</td>
+      <td class="right"><strong>${formatMoney(item.outstanding)}</strong></td>
+      <td>${renderStatusBadge(item, status, today)}</td>
+      <td class="actions-cell">${settleButton}</td>
+    </tr>`;
+    return mainRow + (isExpanded ? renderPaymentHistoryRow(item) : "");
+  }
+
+  function renderPage() {
+    subledger = buildSubledger(subledgerType);
+    const today = getTodayIso();
+    renderLegacyMigrationBanner();
+
+    if (!subledger.controlAccount) {
+      byId("subledger-summary").innerHTML = "";
+      byId("subledger-aging").innerHTML = "";
+      tableBody.innerHTML = `<tr><td colspan="9" class="muted">ยังไม่พบบัญชี${settings.controlAccountName} — <a href="../settings/settings.html">กำหนดที่หน้าการตั้งค่า</a> หรือเพิ่มผังบัญชีมาตรฐาน</td></tr>`;
       return;
     }
-    const rows = visibleRecords(today).sort((left, right) => (toIsoDate(left.due) || "9999").localeCompare(toIsoDate(right.due) || "9999"));
-    if (!rows.length) {
-      tableBody.innerHTML = '<tr><td colspan="9" class="muted">ไม่มีรายการในสถานะนี้</td></tr>';
+
+    renderSummaryCards(today);
+    renderAging(today);
+    renderPartySummary();
+    renderStatusChips(today);
+
+    if (!subledger.documents.length) {
+      tableBody.innerHTML = `<tr><td colspan="9" class="muted">ยังไม่มีรายการ${settings.noun} — บันทึกรายการที่ใช้บัญชี${settings.controlAccountName}ในสมุดรายวัน พร้อมระบุคู่ค้า</td></tr>`;
       return;
     }
-    tableBody.innerHTML = rows.map((record) => {
-      const { total, vat } = docAmounts(record);
-      const paid = Number(record.paid) || 0;
-      const status = statusOf(record, today);
-      const badge = status === "paid"
-        ? '<span class="badge success dot">ชำระครบ</span>'
-        : status === "overdue"
-          ? `<span class="badge danger dot">เกินกำหนด ${fmtInt(daysOverdue(record, today))} วัน</span>`
-          : paid > 0 ? '<span class="badge info dot">ชำระบางส่วน</span>' : '<span class="badge warning dot">รอชำระ</span>';
-      const posted = record.entryId ? '<span class="badge success" title="ลงบัญชีแยกประเภทแล้ว">GL ✓</span>' : `<button type="button" class="small ghost" data-post="${esc(record.id)}" title="สร้างรายการบัญชีให้เอกสารนี้">ลงบัญชี</button>`;
-      const historyCount = (record.payments || []).length;
-      const main = `<tr${expandedId === record.id ? ' class="is-expanded"' : ""}>
-        <td>${esc(partyName(record))}${record.note ? `<span class="cell-sub">${esc(record.note)}</span>` : ""}</td>
-        <td class="nowrap">${esc(record.docNo || "-")}<span class="cell-sub">${posted}</span></td>
-        <td class="nowrap">${esc(fmtDateDMY(record.date))}</td>
-        <td class="nowrap">${esc(record.due ? fmtDateDMY(record.due) : "-")}</td>
-        <td class="right">${fmt(total)}${vat > AMOUNT_EPSILON ? `<span class="cell-sub">VAT ${fmt(vat)}</span>` : ""}</td>
-        <td class="right">${fmt(paid)}${historyCount || paid > 0 ? `<span class="cell-sub"><button type="button" class="link-btn" data-history="${esc(record.id)}">${expandedId === record.id ? "ซ่อนประวัติ" : `ประวัติ (${fmtInt(historyCount)})`}</button></span>` : ""}</td>
-        <td class="right"><strong>${fmt(remainingOf(record))}</strong></td>
-        <td>${badge}</td>
-        <td class="actions-cell">${status !== "paid" ? `<button type="button" class="small" data-settle="${esc(record.id)}">${cfg.settleVerb}</button>` : ""}<button type="button" class="small secondary" data-edit="${esc(record.id)}">แก้ไข</button><button type="button" class="small danger" data-delete="${esc(record.id)}">ลบ</button></td>
-      </tr>`;
-      return main + (expandedId === record.id ? historyRow(record) : "");
-    }).join("");
+    const visibleDocuments = getVisibleDocuments(today)
+      .sort((left, right) => (left.due || "9999").localeCompare(right.due || "9999"));
+    tableBody.innerHTML = visibleDocuments.length
+      ? visibleDocuments.map((item) => renderDocumentRow(item, today)).join("")
+      : '<tr><td colspan="9" class="muted">ไม่มีรายการในสถานะนี้</td></tr>';
   }
 
-  /* ---------- persistence ---------- */
-  async function persist(nextRecords, nextEntries, message) {
-    const previous = JSON.parse(JSON.stringify(state));
-    replaceState({ ...state, [cfg.dataKey]: nextRecords, ...(nextEntries ? { entries: sortEntries(nextEntries) } : {}) });
-    if (!(await save(nextEntries ? [cfg.dataKey, "entries"] : [cfg.dataKey]))) {
-      replaceState(previous);
-      renderTable();
-      return false;
+  /* ---------------------------------------------------------------- */
+  /* รับชำระ / จ่ายชำระ                                                  */
+  /* ---------------------------------------------------------------- */
+
+  async function recordSettlement(item) {
+    const cashAccounts = getCashAccountOptions();
+    if (!cashAccounts.options.length) {
+      notifyError("ยังไม่มีบัญชีสินทรัพย์สำหรับรับ/จ่ายเงิน");
+      return;
     }
-    renderPartyOptions();
-    renderTable();
-    toastSuccess(message);
-    return true;
-  }
-
-  /** True when any journal entry linked to this document falls in a closed period. */
-  const lockedDates = (record) =>
-    (record.entryId && isLocked(record.date)) ||
-    (record.payments || []).some((payment) => payment.entryId && isLocked(payment.date));
-
-  async function settle(record) {
-    const remaining = remainingOf(record);
-    const cash = cashAccountOptions();
-    if (!cash.options.length) return toastError("ยังไม่มีบัญชีสินทรัพย์สำหรับรับ/จ่ายเงิน");
     const values = await formDialog({
-      title: `${cfg.settleVerb} ${record.docNo || ""}`.trim(),
-      message: `${partyName(record)} · คงค้าง ${fmt(remaining)}`,
-      confirmText: `บันทึก${cfg.settleVerb}`,
+      title: `${settings.settleVerb} ${item.docNo}`.trim(),
+      message: `${item.partyName} · คงค้าง ${formatMoney(item.outstanding)} — ระบบจะบันทึกรายการในสมุดรายวันให้`,
+      confirmText: `บันทึก${settings.settleVerb}`,
       fields: [
-        { name: "date", label: "วันที่", type: "date", value: todayIso(), required: true },
-        { name: "amount", label: "จำนวนเงิน", type: "number", value: remaining.toFixed(2), min: 0.01, max: remaining, step: "0.01", required: true },
-        { name: "accountId", label: kind === "receivable" ? "รับเงินเข้าบัญชี" : "จ่ายเงินจากบัญชี", type: "select", value: cash.defaultId, options: cash.options, required: true },
-        { name: "post", label: "ลงบัญชีแยกประเภทอัตโนมัติ", type: "checkbox", value: Boolean(record.entryId) },
+        { name: "date", label: "วันที่", type: "date", value: getTodayIso(), required: true },
+        { name: "amount", label: "จำนวนเงิน", type: "number", value: item.outstanding.toFixed(2), min: 0.01, max: item.outstanding, step: "0.01", required: true },
+        { name: "accountId", label: settings.cashFieldLabel, type: "select", value: cashAccounts.defaultAccountId, options: cashAccounts.options, required: true },
       ],
     });
     if (!values) return;
-    const amount = round2(values.amount);
-    if (amount <= 0 || amount - remaining > AMOUNT_EPSILON) return toastError("จำนวนเงินไม่ถูกต้อง");
-    if (values.post && isLocked(values.date)) return toastError(lockMessage());
-    if (values.post && !record.entryId && !(await confirmAction(`เอกสารนี้ยังไม่ได้ลงบัญชี การลงบัญชี${cfg.settleVerb}อย่างเดียวจะทำให้ยอดบัญชีคุม${cfg.noun}ติดลบ ต้องการดำเนินการต่อหรือไม่?`, { title: "ยังไม่ได้ลงบัญชีเอกสาร", confirmText: "ดำเนินการต่อ", tone: "primary" }))) return;
 
-    const payment = { id: uid(), date: values.date, amount, accountId: values.accountId };
-    const entries = values.post ? state.entries.slice() : null;
-    if (values.post) {
-      const result = settlementLines(kind, payment);
-      if (result.error) return toastError(result.error);
-      payment.entryId = upsertEntry(entries, {
-        date: payment.date,
-        desc: `${cfg.settleDesc} ${record.docNo || ""} ${partyName(record)}`.trim(),
-        lines: result.lines,
-        source: { type: kind === "receivable" ? "receipt" : "payment", id: record.id, paymentId: payment.id, docNo: record.docNo || "" },
-        ...(kind === "receivable" && record.customerId ? { customerId: record.customerId, customerName: partyName(record) } : {}),
-      });
+    const amount = roundMoney(values.amount);
+    if (amount <= 0 || amount - item.outstanding > AMOUNT_EPSILON) {
+      notifyError("จำนวนเงินไม่ถูกต้อง");
+      return;
     }
-    const next = records().map((item) => item.id === record.id
-      ? { ...item, paid: round2((Number(item.paid) || 0) + amount), payments: [...(item.payments || []), payment], lastPaidAt: payment.date }
-      : item);
-    await persist(next, entries, `บันทึก${cfg.settleVerb} ${fmt(amount)} เรียบร้อย${values.post ? " และลงบัญชีแล้ว" : ""}`);
+    if (isDateLocked(values.date)) {
+      notifyError(getLockedPeriodMessage());
+      return;
+    }
+    const posting = buildSettlementLines(subledgerType, { accountId: values.accountId, amount });
+    if (posting.error) {
+      notifyError(posting.error);
+      return;
+    }
+
+    const entries = state.entries.slice();
+    const entryId = upsertJournalEntry(entries, {
+      date: values.date,
+      desc: `${settings.settlementDescription} ${item.docNo} ${item.partyName}`.trim(),
+      lines: posting.lines,
+      customerId: item.customerId,
+      customerName: item.customerName,
+    });
+    // ระบุว่าการชำระนี้ตัดเอกสารใบไหน (ไม่ใช่ตัดเอกสารเก่าสุดโดยอัตโนมัติ)
+    const settlementEntry = entries.find((entry) => entry.id === entryId);
+    settlementEntry.appliesTo = item.entryId;
+
+    const savePromise = commitChanges({ entries: sortEntriesByDate(entries) });
+    renderPage();
+    if (await savePromise) notifySuccess(`บันทึก${settings.settleVerb} ${formatMoney(amount)} ในสมุดรายวัน (${settlementEntry.docNo}) เรียบร้อย`);
+    else renderPage();
   }
 
-  async function postExisting(record) {
-    if (isLocked(record.date)) return toastError(lockMessage());
-    const result = documentLines(kind, record);
-    if (result.error) return toastError(result.error);
-    const legacyPaid = round2((Number(record.paid) || 0) - (record.payments || []).reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0));
-    const cash = cashAccountOptions();
-    const fields = [{ name: "confirm", label: "ยืนยันว่าเอกสารนี้ยังไม่เคยบันทึกในสมุดรายวัน (ป้องกันการลงบัญชีซ้ำ)", type: "checkbox", value: false }];
-    if (legacyPaid > AMOUNT_EPSILON) {
-      fields.push(
-        { name: "postPaid", label: `ลงบัญชี${cfg.settleVerb}ยอดเดิม ${fmt(legacyPaid)} ด้วย`, type: "checkbox", value: true },
-        { name: "paidDate", label: `วันที่${cfg.settleVerb}`, type: "date", value: toIsoDate(record.lastPaidAt) || toIsoDate(record.date) || todayIso() },
-        { name: "accountId", label: "บัญชีเงินสด/ธนาคาร", type: "select", value: cash.defaultId, options: cash.options },
-      );
+  /* ---------------------------------------------------------------- */
+  /* ย้ายข้อมูลจากระบบเดิม (ฟอร์มลูกหนี้/เจ้าหนี้แบบแยก)                     */
+  /* ---------------------------------------------------------------- */
+
+  const getLegacyRecords = () => state[settings.legacyCollection].filter((record) => !record.migratedAt);
+
+  function renderLegacyMigrationBanner() {
+    const container = byId("subledger-legacy");
+    const legacyRecords = getLegacyRecords();
+    if (!legacyRecords.length) {
+      container.innerHTML = "";
+      return;
     }
+    const unpostedCount = legacyRecords.filter((record) => !record.entryId).length;
+    container.innerHTML = `<div class="banner warn">
+      <span>มีข้อมูล${settings.noun}จากระบบเดิม <strong>${formatNumber(legacyRecords.length)}</strong> เอกสาร${unpostedCount ? ` (ยังไม่ลงบัญชี ${formatNumber(unpostedCount)})` : ""} — ย้ายเข้าสมุดรายวันเพื่อให้แสดงในทะเบียนนี้</span>
+      <button type="button" class="small" id="subledger-migrate" style="margin-left:auto">ย้ายข้อมูล</button>
+    </div>`;
+    byId("subledger-migrate").addEventListener("click", migrateLegacyRecords);
+  }
+
+  /** คู่ค้าของข้อมูลระบบเดิม (ลูกหนี้อ้างอิงทะเบียนลูกค้า, เจ้าหนี้เก็บชื่อผู้ขายเป็นข้อความ) */
+  function getLegacyPartyFields(record) {
+    if (subledgerType === "receivable") {
+      const customer = findCustomerById(record.customerId);
+      return { customerId: record.customerId || "", customerName: customer ? formatCustomerLabel(customer) : record.customerName || "" };
+    }
+    return { customerId: "", customerName: record.vendorName || "" };
+  }
+
+  async function migrateLegacyRecords() {
+    const legacyRecords = getLegacyRecords();
+    const unpostedRecords = legacyRecords.filter((record) => !record.entryId);
+    const cashAccount = findAccountForRole("cash");
+    const fields = unpostedRecords.length
+      ? [{ name: "confirm", label: `ยืนยันว่าเอกสารที่ยังไม่ลงบัญชี ${unpostedRecords.length} ฉบับ ยังไม่เคยบันทึกในสมุดรายวัน (ป้องกันการลงบัญชีซ้ำ)`, type: "checkbox", value: false }]
+      : [];
     const values = await formDialog({
-      title: `ลงบัญชี ${record.docNo || ""}`.trim(),
-      message: `${partyName(record)} · ${fmt(docAmounts(record).total)} — ระบบจะสร้างรายการในสมุดรายวันลงวันที่ ${fmtDateDMY(record.date)}`,
-      confirmText: "ลงบัญชี",
+      title: `ย้ายข้อมูล${settings.noun}เข้าสมุดรายวัน`,
+      message: `เอกสารที่ลงบัญชีแล้ว: เติมคู่ค้าและวันครบกำหนดในรายการเดิม · เอกสารที่ยังไม่ลงบัญชี: สร้างรายการใหม่ รวมยอดที่ชำระแล้ว (ใช้บัญชี ${formatAccountLabel(cashAccount)})`,
+      confirmText: "ย้ายข้อมูล",
       fields,
     });
     if (!values) return;
-    if (!values.confirm) return toastError("กรุณาติ๊กยืนยันก่อนลงบัญชี");
-    const entries = state.entries.slice();
-    const updated = { ...record, payments: [...(record.payments || [])] };
-    updated.entryId = upsertEntry(entries, {
-      date: toIsoDate(record.date) || record.date,
-      desc: `${cfg.docDesc} ${record.docNo || ""} ${partyName(record)}`.trim(),
-      lines: result.lines,
-      source: { type: kind, id: record.id, docNo: record.docNo || "" },
-      ...(kind === "receivable" && record.customerId ? { customerId: record.customerId, customerName: partyName(record) } : {}),
-    });
-    if (values.postPaid) {
-      if (isLocked(values.paidDate)) return toastError(lockMessage());
-      const payment = { id: uid(), date: values.paidDate, amount: legacyPaid, accountId: values.accountId };
-      const settlement = settlementLines(kind, payment);
-      if (settlement.error) return toastError(settlement.error);
-      payment.entryId = upsertEntry(entries, {
-        date: payment.date,
-        desc: `${cfg.settleDesc} ${record.docNo || ""} ${partyName(record)}`.trim(),
-        lines: settlement.lines,
-        source: { type: kind === "receivable" ? "receipt" : "payment", id: record.id, paymentId: payment.id, docNo: record.docNo || "" },
-      });
-      updated.payments.push(payment);
-    }
-    await persist(records().map((item) => (item.id === record.id ? updated : item)), entries, `ลงบัญชี ${record.docNo || ""} เรียบร้อย`);
-  }
-
-  async function deletePayment(recordId, paymentId) {
-    const record = records().find((item) => item.id === recordId);
-    const payment = record?.payments?.find((item) => item.id === paymentId);
-    if (!payment) return;
-    if (payment.entryId && isLocked(payment.date)) return toastError(lockMessage());
-    if (!(await confirmAction(`ลบรายการ${cfg.settleVerb} ${fmt(payment.amount)} วันที่ ${fmtDateDMY(payment.date)}${payment.entryId ? " และรายการบัญชีที่เชื่อมไว้" : ""}?`))) return;
-    const entries = payment.entryId ? state.entries.filter((entry) => entry.id !== payment.entryId) : null;
-    const next = records().map((item) => item.id === recordId
-      ? { ...item, paid: Math.max(0, round2((Number(item.paid) || 0) - payment.amount)), payments: item.payments.filter((p) => p.id !== paymentId) }
-      : item);
-    await persist(next, entries, `ลบรายการ${cfg.settleVerb}เรียบร้อย`);
-  }
-
-  async function deleteRecord(record) {
-    if (lockedDates(record)) return toastError(lockMessage());
-    const linked = linkedEntryIds(record);
-    if (!(await confirmAction(`ลบ${cfg.noun} ${record.docNo || ""}${linked.length ? ` และรายการบัญชีที่เชื่อมไว้ ${linked.length} รายการ` : ""}?`))) return;
-    const entries = linked.length ? state.entries.filter((entry) => !linked.includes(entry.id)) : null;
-    if (await persist(records().filter((item) => item.id !== record.id), entries, `ลบ${cfg.noun}เรียบร้อย`) && editingId === record.id) resetForm();
-  }
-
-  /* ---------- events ---------- */
-  tableBody.addEventListener("click", async (event) => {
-    const button = event.target.closest("button");
-    if (!button) return;
-    const find = (id) => records().find((item) => item.id === id);
-    if (button.dataset.settle) return settle(find(button.dataset.settle));
-    if (button.dataset.post) return postExisting(find(button.dataset.post));
-    if (button.dataset.edit) return fillForm(find(button.dataset.edit));
-    if (button.dataset.delete) return deleteRecord(find(button.dataset.delete));
-    if (button.dataset.history) {
-      expandedId = expandedId === button.dataset.history ? null : button.dataset.history;
-      renderTable();
+    if (unpostedRecords.length && !values.confirm) {
+      notifyError("กรุณาติ๊กยืนยันก่อนย้ายข้อมูล");
       return;
     }
-    if (button.dataset.deletePayment) {
-      const [recordId, paymentId] = button.dataset.deletePayment.split("|");
-      deletePayment(recordId, paymentId);
+
+    const entries = state.entries.map((entry) => ({ ...entry }));
+    const findEntry = (entryId) => entries.find((entry) => entry.id === entryId);
+    const migratedAt = new Date().toISOString();
+    const migratedIds = new Set();
+
+    for (const record of legacyRecords) {
+      const partyFields = getLegacyPartyFields(record);
+      let documentEntryId = record.entryId;
+
+      if (!documentEntryId) {
+        if (isDateLocked(record.date)) continue; // อยู่ในงวดที่ปิดแล้ว: ข้ามไว้ ย้ายหลังปลดล็อก
+        const posting = buildDocumentLines(subledgerType, record);
+        if (posting.error) {
+          notifyError(posting.error);
+          return;
+        }
+        documentEntryId = upsertJournalEntry(entries, {
+          date: toIsoDate(record.date) || record.date,
+          desc: `${settings.documentDescription} ${record.docNo || ""} ${partyFields.customerName}`.trim(),
+          lines: posting.lines,
+          ...partyFields,
+        });
+        // ยอดที่ชำระแล้วในระบบเดิม → รายการรับ/จ่ายชำระ ที่ตัดเอกสารนี้
+        const legacyPaid = roundMoney(record.paid);
+        if (legacyPaid > AMOUNT_EPSILON && cashAccount) {
+          const settlement = buildSettlementLines(subledgerType, { accountId: cashAccount.id, amount: legacyPaid });
+          const settlementEntryId = upsertJournalEntry(entries, {
+            date: toIsoDate(record.lastPaidAt) || toIsoDate(record.date) || record.date,
+            desc: `${settings.settlementDescription} ${record.docNo || ""} ${partyFields.customerName}`.trim(),
+            lines: settlement.lines,
+            ...partyFields,
+          });
+          findEntry(settlementEntryId).appliesTo = documentEntryId;
+        }
+      } else {
+        // ลงบัญชีแล้ว: เติมคู่ค้าให้รายการชำระเดิม (ระบบเดิมไม่ได้บันทึกผู้ขายในสมุดรายวัน)
+        (record.payments || []).forEach((payment) => {
+          const paymentEntry = payment.entryId && findEntry(payment.entryId);
+          if (paymentEntry) Object.assign(paymentEntry, partyFields, { appliesTo: documentEntryId });
+        });
+      }
+
+      const documentEntry = findEntry(documentEntryId);
+      if (documentEntry) {
+        Object.assign(documentEntry, partyFields);
+        if (record.due) documentEntry.due = toIsoDate(record.due);
+      }
+      migratedIds.add(record.id);
+    }
+
+    const legacyCollection = state[settings.legacyCollection]
+      .map((record) => (migratedIds.has(record.id) ? { ...record, migratedAt } : record));
+    const savePromise = commitChanges({ entries: sortEntriesByDate(entries), [settings.legacyCollection]: legacyCollection });
+    renderPage();
+    if (await savePromise) notifySuccess(`ย้ายข้อมูล${settings.noun} ${formatNumber(migratedIds.size)} เอกสารเข้าสมุดรายวันเรียบร้อย`);
+    else renderPage();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* ส่งออก CSV และผูกอีเวนต์                                            */
+  /* ---------------------------------------------------------------- */
+
+  function exportCsv() {
+    const today = getTodayIso();
+    const documents = getVisibleDocuments(today);
+    if (!documents.length) {
+      notifyError("ไม่มีรายการให้ส่งออก");
+      return;
+    }
+    const statusLabels = { paid: "ชำระครบ", overdue: "เกินกำหนด", pending: "รอชำระ" };
+    const headers = ["คู่ค้า", "เลขที่", "วันที่", "ครบกำหนด", "คำอธิบาย", "ยอดหนี้", settings.settledLabel, "คงค้าง", "สถานะ", "เกินกำหนด (วัน)"];
+    const rows = documents.map((item) => [
+      item.partyName, item.docNo, formatDate(item.date), formatDate(item.due), item.desc,
+      item.amount, item.paid, item.outstanding, statusLabels[getStatus(item, today)], getDaysOverdue(item, today),
+    ]);
+    downloadCsv(`${settings.legacyCollection}-${getFileDateStamp()}.csv`, buildCsv(headers, rows));
+    notifySuccess(`ส่งออก ${formatNumber(documents.length)} รายการ`);
+  }
+
+  tableBody.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    const { settle: settleEntryId, history: historyEntryId } = button.dataset;
+    if (settleEntryId) {
+      const item = findDocument(settleEntryId);
+      if (item) recordSettlement(item);
+    } else if (historyEntryId) {
+      expandedEntryId = expandedEntryId === historyEntryId ? null : historyEntryId;
+      renderPage();
     }
   });
-
-  $("sl-status-filter").addEventListener("click", (event) => {
+  byId("subledger-status-filter").addEventListener("click", (event) => {
     const chip = event.target.closest("[data-status]");
     if (!chip) return;
     statusFilter = chip.dataset.status;
-    renderTable();
+    renderPage();
   });
-  $("sl-search").addEventListener("input", debounce(renderTable, 150));
-  $("sl-net").addEventListener("input", updateAmounts);
-  $("sl-vat-rate").addEventListener("change", updateAmounts);
-  $("sl-cancel").addEventListener("click", () => {
-    resetForm();
-    toast("ยกเลิกการแก้ไขแล้ว");
-  });
+  byId("subledger-search").addEventListener("input", debounce(renderPage, 150));
+  byId("subledger-export").addEventListener("click", exportCsv);
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const existing = editingId ? records().find((item) => item.id === editingId) : null;
-    const date = $("sl-date").value;
-    const due = $("sl-due").value;
-    const vatRate = Number($("sl-vat-rate").value) || 0;
-    const { net, vat, total } = computeVat($("sl-net").value, vatRate);
-    const partyValue = $("sl-party").value.trim();
-    if (!partyValue) return toastError(`ระบุ${cfg.partyNoun}ก่อน`);
-    if (!date) return toastError("ระบุวันที่เอกสาร");
-    if (net <= 0) return toastError("จำนวนเงินต้องมากกว่า 0");
-    if (due && due < date) return toastError("วันครบกำหนดต้องไม่ก่อนวันที่เอกสาร");
-    if (existing && total + AMOUNT_EPSILON < (Number(existing.paid) || 0)) return toastError("ยอดรวมต้องไม่น้อยกว่ายอดที่ชำระแล้ว");
-    const willPost = $("sl-post").checked || Boolean(existing?.entryId);
-    if (willPost && (isLocked(date) || (existing?.entryId && isLocked(existing.date)))) return toastError(lockMessage());
-
-    const id = existing?.id || uid();
-    const docNo = $("sl-docno").value.trim() || nextSeqNo(records(), cfg.docCode, date, id);
-    if (records().some((item) => item.docNo === docNo && item.id !== id)) return toastError(`เลขที่เอกสาร ${docNo} มีอยู่แล้ว`);
-
-    const record = {
-      ...(existing || { id, paid: 0, payments: [] }),
-      docNo,
-      date,
-      due,
-      net,
-      vatRate,
-      vat,
-      amount: total,
-      counterAccountId: $("sl-counter").value,
-      note: $("sl-note").value.trim(),
-    };
-    if (kind === "receivable") record.customerId = partyValue;
-    else {
-      record.vendorName = partyValue;
-      record.vendorTaxId = $("sl-party-tax").value.trim();
-    }
-
-    let entries = null;
-    if (willPost) {
-      const result = documentLines(kind, record);
-      if (result.error) return toastError(result.error);
-      entries = state.entries.slice();
-      record.entryId = upsertEntry(entries, {
-        entryId: record.entryId,
-        date,
-        desc: `${cfg.docDesc} ${docNo} ${partyName(record)}`.trim(),
-        lines: result.lines,
-        source: { type: kind, id, docNo },
-        ...(kind === "receivable" ? { customerId: record.customerId, customerName: partyName(record) } : {}),
-      });
-    }
-    const next = existing ? records().map((item) => (item.id === id ? record : item)) : [...records(), record];
-    next.sort((left, right) => String(left.date || "").localeCompare(String(right.date || "")));
-    if (await persist(next, entries, `${existing ? "แก้ไข" : "เพิ่ม"}${cfg.noun} ${docNo} เรียบร้อย${willPost ? " (ลงบัญชีแล้ว)" : ""}`)) resetForm();
-  });
-
-  $("sl-export").addEventListener("click", () => {
-    const today = todayIso();
-    const rows = visibleRecords(today);
-    if (!rows.length) return toastError("ไม่มีรายการให้ส่งออก");
-    const labels = { paid: "ชำระครบ", overdue: "เกินกำหนด", pending: "รอชำระ" };
-    downloadCsvFile(`${cfg.dataKey}-${fileStamp()}.csv`, toCsv(
-      [cfg.partyNoun, "เลขที่", "วันที่", "ครบกำหนด", "ก่อน VAT", "VAT", "ยอดรวม", cfg.settledLabel, "คงค้าง", "สถานะ", "เกินกำหนด (วัน)", "ลงบัญชี", "หมายเหตุ"],
-      rows.map((record) => {
-        const { net, vat, total } = docAmounts(record);
-        return [partyName(record), record.docNo, fmtDateDMY(record.date), fmtDateDMY(record.due), net, vat, total, Number(record.paid) || 0, remainingOf(record), labels[statusOf(record, today)], daysOverdue(record, today), record.entryId ? "ใช่" : "ไม่", record.note || ""];
-      }),
-    ));
-    toastSuccess(`ส่งออก ${fmtInt(rows.length)} รายการ`);
-  });
-
-  if (await load([cfg.dataKey, "accounts", "entries", ...cfg.extraKeys])) {
-    renderPartyOptions();
-    resetForm();
-    renderTable();
-    if (location.hash === "#new") {
-      form.scrollIntoView({ block: "start" });
-      $("sl-party").focus();
-      history.replaceState(null, "", location.pathname);
-    }
-    onDataRefresh(() => {
-      renderPartyOptions();
-      renderTable();
-    });
-  }
+  if (!(await loadData(["accounts", "entries", "customers", "suppliers", settings.legacyCollection]))) return;
+  renderPage();
+  onDataRefresh(renderPage);
 }

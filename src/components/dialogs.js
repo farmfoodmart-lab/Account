@@ -1,52 +1,37 @@
 /**
- * Small UI helpers shared across the app: toast notifications and file downloads.
+ * @file กล่องโต้ตอบ (modal dialog) ที่ใช้ทั้งระบบ
+ *
+ * ทุกฟังก์ชันคืนค่าเป็น Promise เพื่อให้เรียกแบบ `await` ได้ เช่น
+ *   if (!(await confirmDialog("ลบรายการนี้?"))) return;
  */
-
-const TOAST_DURATION_MS = 3200;
-const TOAST_FADE_MS = 220;
 
 /**
- * Show a transient message in the bottom-right corner.
- * @param {string} message
- * @param {'info'|'success'|'error'} variant
+ * แปลงอักขระพิเศษของ HTML (ใช้ภายในไฟล์นี้ เพื่อให้คอมโพเนนต์ไม่ต้องพึ่งไฟล์อื่น)
+ * @param {unknown} text
+ * @returns {string}
  */
-export function toast(message, variant = 'info') {
-  const host = document.getElementById('toasts');
-  if (!host) return;
-
-  const toastElement = document.createElement('div');
-  toastElement.className = `toast ${variant}`;
-  toastElement.textContent = message;
-  host.appendChild(toastElement);
-
-  window.setTimeout(() => {
-    toastElement.classList.add('out');
-    window.setTimeout(() => toastElement.remove(), TOAST_FADE_MS);
-  }, TOAST_DURATION_MS);
-}
-
-export function toastSuccess(message) {
-  toast(message, 'success');
-}
-
-export function toastError(message) {
-  toast(message, 'error');
+function escapeAttribute(text) {
+  return String(text == null ? "" : text).replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 }
 
 /**
- * Modal confirmation. Resolves true when the user confirms.
- * @param {string} message
- * @param {{title?: string, confirmText?: string, tone?: 'danger'|'primary'}} [options]
+ * กล่องยืนยันการทำรายการ
+ * @param {string} message ข้อความอธิบาย
+ * @param {object} [options]
+ * @param {string} [options.title="ยืนยันการทำรายการ"] หัวข้อ
+ * @param {string} [options.confirmText="ยืนยัน"] ข้อความบนปุ่มยืนยัน
+ * @param {"danger" | "primary"} [options.tone="danger"] danger = ปุ่มสีแดง (เช่นการลบ), primary = ปุ่มสีหลัก
+ * @returns {Promise<boolean>} true เมื่อผู้ใช้กดยืนยัน
  */
-export function confirmAction(message, options = {}) {
-  const { title = 'ยืนยันการทำรายการ', confirmText = 'ยืนยัน', tone = 'danger' } = options;
+export function confirmDialog(message, options = {}) {
+  const { title = "ยืนยันการทำรายการ", confirmText = "ยืนยัน", tone = "danger" } = options;
   return new Promise((resolve) => {
-    const dialog = document.createElement('dialog');
-    dialog.className = `app-dialog${tone === 'primary' ? ' is-prompt' : ''}`;
-    dialog.setAttribute('aria-labelledby', 'app-dialog-title');
+    const dialog = document.createElement("dialog");
+    dialog.className = `app-dialog${tone === "primary" ? " is-prompt" : ""}`;
+    dialog.setAttribute("aria-labelledby", "app-dialog-title");
     dialog.innerHTML = `
       <form method="dialog">
-        <div class="app-dialog-mark" aria-hidden="true">${tone === 'primary' ? 'i' : '!'}</div>
+        <div class="app-dialog-mark" aria-hidden="true">${tone === "primary" ? "i" : "!"}</div>
         <h2 id="app-dialog-title"></h2>
         <p class="app-dialog-message"></p>
         <div class="app-dialog-actions">
@@ -54,11 +39,13 @@ export function confirmAction(message, options = {}) {
           <button type="submit" value="confirm"></button>
         </div>
       </form>`;
-    dialog.querySelector('#app-dialog-title').textContent = title;
+    // ใช้ textContent เพื่อให้ข้อความจากผู้ใช้ไม่ถูกตีความเป็น HTML
+    dialog.querySelector("#app-dialog-title").textContent = title;
     dialog.querySelector('button[value="confirm"]').textContent = confirmText;
-    dialog.querySelector('.app-dialog-message').textContent = message;
-    dialog.addEventListener('close', () => {
-      resolve(dialog.returnValue === 'confirm');
+    dialog.querySelector(".app-dialog-message").textContent = message;
+
+    dialog.addEventListener("close", () => {
+      resolve(dialog.returnValue === "confirm");
       dialog.remove();
     }, { once: true });
 
@@ -68,179 +55,109 @@ export function confirmAction(message, options = {}) {
 }
 
 /**
- * Modal with a single input. Resolves the entered string, or null on cancel.
- * @param {{title: string, message?: string, label: string, type?: string, value?: string|number,
- *          min?: number, max?: number, step?: string, confirmText?: string}} options
+ * @typedef {object} DialogField ช่องกรอกข้อมูลหนึ่งช่องในกล่องฟอร์ม
+ * @property {string} name ชื่อคีย์ของค่าที่จะคืนกลับ
+ * @property {string} label ป้ายกำกับ
+ * @property {"text" | "number" | "date" | "select" | "checkbox"} [type="text"]
+ * @property {string | number | boolean} [value] ค่าเริ่มต้น
+ * @property {Array<{value: string, label: string, group?: string}>} [options] ตัวเลือก (เฉพาะ select)
+ * @property {number | string} [min]
+ * @property {number | string} [max]
+ * @property {string} [step]
+ * @property {boolean} [required]
+ * @property {string} [hint] คำอธิบายใต้ช่องกรอก
  */
-export function promptDialog(options) {
-  const {
-    title,
-    message = '',
-    label,
-    type = 'text',
-    value = '',
-    min,
-    max,
-    step,
-    confirmText = 'ตกลง',
-  } = options;
-  return new Promise((resolve) => {
-    const dialog = document.createElement('dialog');
-    dialog.className = 'app-dialog is-prompt';
-    dialog.setAttribute('aria-labelledby', 'app-dialog-title');
-    dialog.innerHTML = `
-      <form method="dialog">
-        <div class="app-dialog-mark" aria-hidden="true">฿</div>
-        <h2 id="app-dialog-title"></h2>
-        <p class="app-dialog-message"></p>
-        <label class="field"><span class="prompt-label"></span><input name="value"></label>
-        <div class="app-dialog-actions">
-          <button type="button" class="secondary" data-cancel>ยกเลิก</button>
-          <button type="submit" value="confirm"></button>
-        </div>
-      </form>`;
-    dialog.querySelector('#app-dialog-title').textContent = title;
-    const messageElement = dialog.querySelector('.app-dialog-message');
-    messageElement.textContent = message;
-    messageElement.hidden = !message;
-    dialog.querySelector('.prompt-label').textContent = label;
-    dialog.querySelector('button[value="confirm"]').textContent = confirmText;
-    const input = dialog.querySelector('input');
-    input.type = type;
-    input.value = value;
-    if (min != null) input.min = String(min);
-    if (max != null) input.max = String(max);
-    if (step) input.step = step;
-    input.required = true;
 
-    let result = null;
-    dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
-    dialog.querySelector('form').addEventListener('submit', () => {
-      result = input.value;
+/**
+ * สร้าง HTML ของช่องกรอกหนึ่งช่อง
+ * @param {DialogField} field
+ * @returns {string}
+ */
+function renderField(field) {
+  const name = escapeAttribute(field.name);
+  const label = escapeAttribute(field.label);
+  const hint = field.hint ? `<span class="hint-text">${escapeAttribute(field.hint)}</span>` : "";
+
+  if (field.type === "checkbox") {
+    return `<label class="field check-field"><input type="checkbox" name="${name}"${field.value ? " checked" : ""}> <span>${label}</span></label>`;
+  }
+
+  if (field.type === "select") {
+    let optionsHtml = "";
+    let currentGroup = null;
+    (field.options || []).forEach((option) => {
+      // จัดตัวเลือกที่มี group เดียวกันไว้ใน <optgroup> เดียวกัน
+      if (option.group !== undefined && option.group !== currentGroup) {
+        if (currentGroup !== null) optionsHtml += "</optgroup>";
+        optionsHtml += `<optgroup label="${escapeAttribute(option.group)}">`;
+        currentGroup = option.group;
+      }
+      const selected = String(option.value) === String(field.value) ? " selected" : "";
+      optionsHtml += `<option value="${escapeAttribute(option.value)}"${selected}>${escapeAttribute(option.label)}</option>`;
     });
-    dialog.addEventListener('close', () => {
-      resolve(result);
-      dialog.remove();
-    }, { once: true });
-    document.body.appendChild(dialog);
-    dialog.showModal();
-    input.focus();
-    input.select();
-  });
+    if (currentGroup !== null) optionsHtml += "</optgroup>";
+    return `<label class="field"><span>${label}</span><select name="${name}"${field.required ? " required" : ""}>${optionsHtml}</select>${hint}</label>`;
+  }
+
+  const attributes = [
+    `type="${escapeAttribute(field.type || "text")}"`,
+    `name="${name}"`,
+    `value="${escapeAttribute(field.value)}"`,
+    field.min != null ? `min="${escapeAttribute(field.min)}"` : "",
+    field.max != null ? `max="${escapeAttribute(field.max)}"` : "",
+    field.step ? `step="${escapeAttribute(field.step)}"` : "",
+    field.required ? "required" : "",
+  ].join(" ");
+  return `<label class="field"><span>${label}</span><input ${attributes}>${hint}</label>`;
 }
 
 /**
- * Modal form with several fields. Resolves { name: value } or null on cancel.
- * Field: { name, label, type?: 'text'|'number'|'date'|'select'|'checkbox', value?, options?: [{value,label,group?}],
- *          min?, max?, step?, required?, hint? }
+ * กล่องฟอร์มหลายช่อง เช่น กล่องรับชำระเงิน (วันที่ / จำนวนเงิน / บัญชี)
+ * @param {object} options
+ * @param {string} options.title หัวข้อ
+ * @param {string} [options.message] ข้อความอธิบายใต้หัวข้อ
+ * @param {DialogField[]} options.fields ช่องกรอกข้อมูล
+ * @param {string} [options.confirmText="บันทึก"] ข้อความบนปุ่มยืนยัน
+ * @param {string} [options.icon="฿"] สัญลักษณ์ที่มุมบนซ้าย
+ * @returns {Promise<Record<string, string | boolean> | null>} ค่าที่กรอก ({ name: value }) หรือ null เมื่อกดยกเลิก
  */
-export function formDialog({ title, message = '', fields, confirmText = 'บันทึก', icon = '฿' }) {
+export function formDialog({ title, message = "", fields, confirmText = "บันทึก", icon = "฿" }) {
   return new Promise((resolve) => {
-    const dialog = document.createElement('dialog');
-    dialog.className = 'app-dialog is-prompt';
-    dialog.setAttribute('aria-labelledby', 'app-dialog-title');
-    const escape = (text) => String(text == null ? '' : text).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
-    const fieldHtml = fields.map((field) => {
-      if (field.type === 'checkbox') {
-        return `<label class="field check-field"><input type="checkbox" name="${escape(field.name)}"${field.value ? ' checked' : ''}> <span>${escape(field.label)}</span></label>`;
-      }
-      if (field.type === 'select') {
-        let lastGroup = null;
-        let options = '';
-        (field.options || []).forEach((option) => {
-          if (option.group !== undefined && option.group !== lastGroup) {
-            if (lastGroup !== null) options += '</optgroup>';
-            options += `<optgroup label="${escape(option.group)}">`;
-            lastGroup = option.group;
-          }
-          options += `<option value="${escape(option.value)}"${String(option.value) === String(field.value) ? ' selected' : ''}>${escape(option.label)}</option>`;
-        });
-        if (lastGroup !== null) options += '</optgroup>';
-        return `<label class="field"><span>${escape(field.label)}</span><select name="${escape(field.name)}"${field.required ? ' required' : ''}>${options}</select>${field.hint ? `<span class="hint-text">${escape(field.hint)}</span>` : ''}</label>`;
-      }
-      const attrs = [
-        `type="${escape(field.type || 'text')}"`,
-        `name="${escape(field.name)}"`,
-        `value="${escape(field.value)}"`,
-        field.min != null ? `min="${escape(field.min)}"` : '',
-        field.max != null ? `max="${escape(field.max)}"` : '',
-        field.step ? `step="${escape(field.step)}"` : '',
-        field.required ? 'required' : '',
-      ].join(' ');
-      return `<label class="field"><span>${escape(field.label)}</span><input ${attrs}>${field.hint ? `<span class="hint-text">${escape(field.hint)}</span>` : ''}</label>`;
-    }).join('');
+    const dialog = document.createElement("dialog");
+    dialog.className = "app-dialog is-prompt";
+    dialog.setAttribute("aria-labelledby", "app-dialog-title");
     dialog.innerHTML = `
       <form method="dialog">
-        <div class="app-dialog-mark" aria-hidden="true">${escape(icon)}</div>
-        <h2 id="app-dialog-title">${escape(title)}</h2>
-        ${message ? `<p class="app-dialog-message">${escape(message)}</p>` : ''}
-        ${fieldHtml}
+        <div class="app-dialog-mark" aria-hidden="true">${escapeAttribute(icon)}</div>
+        <h2 id="app-dialog-title">${escapeAttribute(title)}</h2>
+        ${message ? `<p class="app-dialog-message">${escapeAttribute(message)}</p>` : ""}
+        ${fields.map(renderField).join("")}
         <div class="app-dialog-actions">
           <button type="button" class="secondary" data-cancel>ยกเลิก</button>
-          <button type="submit" value="confirm">${escape(confirmText)}</button>
+          <button type="submit" value="confirm">${escapeAttribute(confirmText)}</button>
         </div>
       </form>`;
-    let result = null;
-    const form = dialog.querySelector('form');
-    dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
-    form.addEventListener('submit', () => {
-      result = {};
+
+    const form = dialog.querySelector("form");
+    let submittedValues = null;
+
+    dialog.querySelector("[data-cancel]").addEventListener("click", () => dialog.close());
+    // เบราว์เซอร์ตรวจ required/min/max ให้ก่อนเกิด submit จึงเก็บค่าได้ทันที
+    form.addEventListener("submit", () => {
+      submittedValues = {};
       fields.forEach((field) => {
         const input = form.elements[field.name];
-        result[field.name] = field.type === 'checkbox' ? input.checked : input.value;
+        submittedValues[field.name] = field.type === "checkbox" ? input.checked : input.value;
       });
     });
-    dialog.addEventListener('close', () => {
-      resolve(result);
+    dialog.addEventListener("close", () => {
+      resolve(submittedValues);
       dialog.remove();
     }, { once: true });
+
     document.body.appendChild(dialog);
     dialog.showModal();
-    const first = form.querySelector('input:not([type=checkbox]), select');
-    if (first) first.focus();
+    const firstInput = form.querySelector("input:not([type=checkbox]), select");
+    if (firstInput) firstInput.focus();
   });
-}
-
-export function debounce(fn, wait = 160) {
-  let timer = 0;
-  return (...args) => {
-    window.clearTimeout(timer);
-    timer = window.setTimeout(() => fn(...args), wait);
-  };
-}
-
-/**
- * Trigger a browser download for arbitrary text content.
- */
-export function downloadText(filename, text, mime = 'text/plain;charset=utf-8') {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-/**
- * Download CSV with a UTF-8 BOM so Excel opens Thai text correctly.
- */
-export function downloadCsvFile(filename, csv) {
-  downloadText(filename, `\uFEFF${csv}`, 'text/csv;charset=utf-8');
-}
-
-export function downloadJson(filename, data) {
-  downloadText(filename, JSON.stringify(data, null, 2), 'application/json;charset=utf-8');
-}
-
-export function todayIso() {
-  const now = new Date();
-  const offsetMs = now.getTimezoneOffset() * 60000;
-  return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
-}
-
-export function fileStamp() {
-  return todayIso().replace(/-/g, '');
 }

@@ -7,20 +7,21 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="../../style.css">
-  <link rel="modulepreload" href="../../js/data.js">
-  <script src="../../js/theme.js"></script>
+  <link rel="stylesheet" href="../../src/styles/main.css">
+  <link rel="modulepreload" href="../../src/core/store.js">
+  <script src="../../src/components/theme.js"></script>
 </head>
 <body>
-  <script src="../../js/shell.js"></script>
+  <script src="../../src/components/app-shell.js"></script>
+  <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
-      <div><h2>ต้นทุนและราคาขายตามลูกค้า</h2><p class="page-sub">ข้อมูลที่นำเข้าจากไฟล์ “รายชื่อลูกค้าพร้อมต้นทุน”</p></div>
+      <div><h2>ต้นทุนและราคาขายตามลูกค้า</h2><p class="page-sub">ข้อมูลจากไฟล์ “รายชื่อลูกค้าพร้อมต้นทุน” — นำเข้าแล้วลงบัญชีให้อัตโนมัติ: Dr ลูกหนี้การค้า / Cr รายได้ (ราคาขาย) และ Dr ต้นทุนขาย / Cr สินค้าคงเหลือ (ราคาทุน)</p></div>
       <div class="page-actions"><a class="btn secondary" href="../import/import.html">นำเข้าไฟล์</a></div>
     </div>
     <div id="customer-cost-import-files" class="import-files"></div>
     <div class="section-head"><h3>รายการ <span id="customer-costs-count" class="muted"></span></h3><label class="search-input" style="min-width:min(280px,100%)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input type="search" id="customer-costs-search" placeholder="ค้นหาลูกค้า / วันที่" aria-label="ค้นหาลูกค้า / วันที่" data-table-filter="#customer-costs-table" data-filter-count="#customer-costs-count"></label></div>
-    <div class="table-wrap tall"><table id="customer-costs-table"><thead><tr><th class="col-date">วันที่</th><th>ชื่อลูกค้า</th><th class="right">ราคาทุน</th><th class="right">ราคาขาย</th><th class="col-act"></th></tr></thead><tbody></tbody></table></div>
+    <div class="table-wrap tall"><table id="customer-costs-table"><thead><tr><th class="col-date">วันที่</th><th>ชื่อลูกค้า</th><th class="right">ราคาทุน</th><th class="right">ราคาขาย</th><th>รายการบัญชี</th><th class="col-actions"></th></tr></thead><tbody></tbody></table></div>
   </main>
   <script type="module" src="customer-costs.js"></script>
 </body>

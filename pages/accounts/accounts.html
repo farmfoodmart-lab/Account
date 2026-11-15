@@ -7,12 +7,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="../../style.css">
-  <link rel="modulepreload" href="../../js/data.js">
-  <script src="../../js/theme.js"></script>
+  <link rel="stylesheet" href="../../src/styles/main.css">
+  <link rel="modulepreload" href="../../src/core/store.js">
+  <script src="../../src/components/theme.js"></script>
 </head>
 <body>
-  <script src="../../js/shell.js"></script>
+  <script src="../../src/components/app-shell.js"></script>
+  <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
       <div><h2>ผังบัญชี</h2><p class="page-sub">กำหนดรหัสและหมวดบัญชี หมวดบัญชีเป็นตัวกำหนดด้านปกติ (เดบิต/เครดิต) และตำแหน่งในงบการเงิน</p></div>
@@ -41,7 +42,7 @@
     </div>
     <div class="table-wrap">
       <table id="accounts-table">
-        <thead><tr><th class="col-code">รหัส</th><th>ชื่อบัญชี</th><th>หมวด</th><th>ด้านปกติ</th><th class="right">รายการ</th><th class="right col-amt">ยอดคงเหลือ</th><th class="col-act"></th></tr></thead>
+        <thead><tr><th class="col-code">รหัส</th><th>ชื่อบัญชี</th><th>หมวด</th><th>ด้านปกติ</th><th class="right">รายการ</th><th class="right col-amount">ยอดคงเหลือ</th><th class="col-actions"></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>

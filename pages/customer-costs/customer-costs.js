@@ -1,38 +1,68 @@
-import { esc, fmt, fmtDateDMY, load, onDataRefresh, replaceState, save, state } from "../../js/data.js";
-import { confirmAction, toastError, toastSuccess } from "../../js/ui.js";
-import { renderImportedFiles } from "../imported-files.js";
+/**
+ * @file หน้า "ต้นทุน/ขายลูกค้า" — ข้อมูลที่นำเข้าจากไฟล์ "รายชื่อลูกค้าพร้อมต้นทุน"
+ *
+ * แต่ละแถวที่นำเข้าถูกลงบัญชีในสมุดรายวันแล้ว (record.entryId):
+ *   Dr ลูกหนี้การค้า / Cr รายได้ (ราคาขาย) และ Dr ต้นทุนขาย / Cr สินค้าคงเหลือ (ราคาทุน)
+ * ลบแถว = ลบรายการบัญชีที่ผูกไว้ด้วย
+ */
+import { commitChanges, loadData, onDataRefresh, state } from "../../src/core/store.js";
+import { getLockedPeriodMessage, isDateLocked } from "../../src/accounting/journal.js";
+import { notifyError, notifySuccess } from "../../src/components/notifications.js";
+import { confirmDialog } from "../../src/components/dialogs.js";
+import { renderImportedFileList } from "../../src/components/imported-file-list.js";
+import { escapeHtml, formatDate, formatMoney } from "../../src/utils/format.js";
 
-const customerCostsTableBody = document.querySelector("#customer-costs-table tbody");
+const tableBody = document.querySelector("#customer-costs-table tbody");
 
-function renderCustomerCosts() {
-  if (!state.customerCosts.length) {
-    customerCostsTableBody.innerHTML = '<tr><td colspan="5" class="muted">ยังไม่มีข้อมูล</td></tr>';
-    return;
-  }
-  customerCostsTableBody.innerHTML = state.customerCosts.map((customerCost, customerCostIndex) => `<tr>
-    <td>${esc(fmtDateDMY(customerCost.date || ""))}</td><td>${esc(customerCost.name || "")}</td>
-    <td class="right">${fmt(customerCost.cost)}</td><td class="right">${fmt(customerCost.price)}</td>
-    <td><button class="small danger" data-delete-customer-cost="${customerCostIndex}">ลบ</button></td></tr>`).join("");
-  customerCostsTableBody.querySelectorAll("[data-delete-customer-cost]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      if (!(await confirmAction("ยืนยันการลบรายการนี้?"))) return;
-      const previousState = JSON.parse(JSON.stringify(state));
-      const customerCosts = state.customerCosts.slice();
-      customerCosts.splice(Number(button.dataset.deleteCustomerCost), 1);
-      replaceState({ ...state, customerCosts });
-      if (!(await save(["customerCosts"]))) {
-        replaceState(previousState);
-        renderCustomerCosts();
-        return;
-      }
-      renderCustomerCosts();
-      toastSuccess("ลบรายการเรียบร้อย");
-    });
-  });
+const findEntry = (entryId) => (entryId ? state.entries.find((entry) => entry.id === entryId) : null);
+
+/** เลขที่รายการบัญชีของแถว (ลิงก์ไปค้นหาในสมุดรายวัน) */
+function renderEntryLink(record) {
+  const entry = findEntry(record.entryId);
+  if (!entry) return '<span class="badge">ไม่ได้ลงบัญชี</span>';
+  return `<a href="../journal/journal.html?q=${encodeURIComponent(entry.docNo || "")}">${escapeHtml(entry.docNo || "ดูรายการ")}</a>`;
 }
 
-if (await load(["customerCosts"])) {
+/** วาดตารางต้นทุน/ราคาขาย */
+function renderCustomerCosts() {
+  if (!state.customerCosts.length) {
+    tableBody.innerHTML = '<tr><td colspan="6" class="muted">ยังไม่มีข้อมูล</td></tr>';
+    return;
+  }
+  tableBody.innerHTML = state.customerCosts.map((customerCost, rowIndex) => `<tr>
+    <td>${escapeHtml(formatDate(customerCost.date || ""))}</td>
+    <td>${escapeHtml(customerCost.name || "")}</td>
+    <td class="right">${formatMoney(customerCost.cost)}</td>
+    <td class="right">${formatMoney(customerCost.price)}</td>
+    <td class="nowrap">${renderEntryLink(customerCost)}</td>
+    <td><button type="button" class="small danger" data-delete-row="${rowIndex}">ลบ</button></td>
+  </tr>`).join("");
+}
+
+// ใช้ event delegation: ผูก listener ครั้งเดียวที่ tbody แทนการผูกทุกปุ่มหลังวาดใหม่
+tableBody.addEventListener("click", async (event) => {
+  const deleteButton = event.target.closest("[data-delete-row]");
+  if (!deleteButton) return;
+  const rowIndex = Number(deleteButton.dataset.deleteRow);
+  const record = state.customerCosts[rowIndex];
+  const linkedEntry = record && findEntry(record.entryId);
+  if (linkedEntry && isDateLocked(linkedEntry.date)) {
+    notifyError(getLockedPeriodMessage());
+    return;
+  }
+  const linkedText = linkedEntry ? ` และรายการบัญชี ${linkedEntry.docNo || ""}` : "";
+  if (!(await confirmDialog(`ยืนยันการลบรายการนี้${linkedText}?`))) return;
+
+  const changes = { customerCosts: state.customerCosts.filter((_, index) => index !== rowIndex) };
+  if (linkedEntry) changes.entries = state.entries.filter((entry) => entry.id !== linkedEntry.id);
+  const savePromise = commitChanges(changes);
   renderCustomerCosts();
-  renderImportedFiles("customer-cost-import-files", "customer_costs", renderCustomerCosts);
+  if (await savePromise) notifySuccess("ลบรายการเรียบร้อย");
+  else renderCustomerCosts();
+});
+
+if (await loadData(["customerCosts", "entries"])) {
+  renderCustomerCosts();
+  renderImportedFileList("customer-cost-import-files", "customer_costs", renderCustomerCosts);
   onDataRefresh(renderCustomerCosts);
 }

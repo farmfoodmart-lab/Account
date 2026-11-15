@@ -7,20 +7,23 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="../../style.css">
-  <link rel="modulepreload" href="../../js/data.js">
-  <script src="../../js/theme.js"></script>
+  <link rel="stylesheet" href="../../src/styles/main.css">
+  <link rel="modulepreload" href="../../src/core/store.js">
+  <script src="../../src/components/theme.js"></script>
 </head>
 <body>
-  <script src="../../js/shell.js"></script>
+  <script src="../../src/components/app-shell.js"></script>
+  <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
-      <div><h2>กระดาษทำการ</h2><p class="page-sub">งบทดลอง → รายการปรับปรุง → งบทดลองหลังปรับปรุง → งบกำไรขาดทุน และงบแสดงฐานะการเงิน</p></div>
+      <div><h2>กระดาษทำการ</h2><p class="page-sub">ชื่อบัญชี · เลขที่ · งบทดลอง · งบกำไรขาดทุน · งบดุล</p></div>
       <div class="page-actions"><button type="button" id="worksheet-export" class="secondary">ส่งออก CSV</button><button type="button" class="secondary" onclick="window.print()">พิมพ์</button></div>
     </div>
     <div class="filter-bar">
-      <label>ณ วันที่ <input type="date" id="worksheet-to"></label>
-      <p class="muted" style="flex:1;min-width:240px">ช่อง “ปรับปรุง” ดึงจากรายการที่บันทึกเป็นประเภท <strong>รายการปรับปรุง</strong> ในสมุดรายวัน · รายการปิดบัญชีจะไม่ถูกนำมาแสดง</p>
+      <label>ตั้งแต่ <input type="date" id="worksheet-from" title="รายได้/ค่าใช้จ่ายนับเฉพาะตั้งแต่วันนี้ · เว้นว่าง = ทุกรายการ"></label>
+      <label>ถึง <input type="date" id="worksheet-to"></label>
+      <label class="check" title="ไม่ติ๊ก = ยอดคงเหลือนับเฉพาะรายการในช่วงที่เลือก"><input type="checkbox" id="worksheet-include-opening"> รวมยอดยกมา</label>
+      <p class="muted" style="flex:1;min-width:240px">ช่องงบทดลองแสดงยอดหลังรวม<strong>รายการปรับปรุง</strong>แล้ว · รายการปิดบัญชีจะไม่ถูกนำมาแสดง</p>
     </div>
     <div id="worksheet-view"><div class="skeleton"></div></div>
   </main>

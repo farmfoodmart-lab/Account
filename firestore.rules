@@ -2,6 +2,8 @@ rules_version = '2';
 
 // Only signed-in users on the allow-list can read or write the books.
 // 1. Replace the example address with the email(s) of people allowed to use the system.
+//    - Google accounts: use their Gmail address.
+//    - Username accounts: "<username>@accountai.local" (the shared account is admin@accountai.local).
 // 2. Deploy: Firebase Console > Firestore Database > Rules > paste this file > Publish
 //    (or `firebase deploy --only firestore:rules` with the Firebase CLI).
 service cloud.firestore {
@@ -9,8 +11,11 @@ service cloud.firestore {
     match /accounting/{docId} {
       allow read, write: if request.auth != null
         && request.auth.token.email in [
-          'owner@example.com'
+          'owner@example.com',
+          'admin@accountai.local'
         ];
     }
   }
 }
+
+// admin / accountingmaxx

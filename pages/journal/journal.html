@@ -7,37 +7,39 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="../../style.css">
-  <link rel="modulepreload" href="../../js/data.js">
-  <script src="../../js/theme.js"></script>
+  <link rel="stylesheet" href="../../src/styles/main.css">
+  <link rel="modulepreload" href="../../src/core/store.js">
+  <script src="../../src/components/theme.js"></script>
 </head>
 <body>
-  <script src="../../js/shell.js"></script>
+  <script src="../../src/components/app-shell.js"></script>
+  <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
       <div><h2>สมุดรายวันทั่วไป</h2><p class="page-sub">บันทึกรายการค้าตามหลักบัญชีคู่ ทุกรายการต้องมียอดเดบิตเท่ากับยอดเครดิต</p></div>
       <div class="page-actions"><button type="button" id="journal-entry-export" class="secondary">ส่งออก CSV</button></div>
     </div>
 
-    <form id="journal-entry-form" class="card je-form" autocomplete="off">
+    <form id="journal-entry-form" class="card journal-form" autocomplete="off">
       <div class="form-title"><h3 id="journal-form-title">บันทึกรายการใหม่</h3><span class="badge warning form-mode">กำลังแก้ไข</span></div>
       <div class="form-grid">
         <label class="field"><span class="req">วันที่</span><input type="date" id="journal-entry-date" required></label>
-        <label class="field"><span>เลขที่เอกสาร</span><input type="text" id="journal-entry-docno" placeholder="สร้างอัตโนมัติ"></label>
+        <label class="field"><span>เลขที่เอกสาร</span><input type="text" id="journal-entry-doc-number" placeholder="สร้างอัตโนมัติ"></label>
         <label class="field"><span>ประเภทรายการ</span><select id="journal-entry-kind"><option value="general">รายการทั่วไป</option><option value="adjusting">รายการปรับปรุง</option><option value="closing">รายการปิดบัญชี</option></select></label>
-        <label class="field"><span>ลูกค้า</span><select id="journal-entry-customer"></select></label>
+        <label class="field"><span>ประเภท</span><select id="journal-entry-party-type"><option value="">ทั้งหมด</option><option value="customer">ลูกค้า</option><option value="supplier">ซัพพลายเออร์</option><option value="item">ชื่อรายการ</option></select></label>
+        <label class="field"><span id="journal-entry-party-label">ลูกค้า / ซัพพลายเออร์ / ชื่อรายการ</span><input type="text" id="journal-entry-customer" placeholder="พิมพ์หรือเลือก ชื่อลูกค้า / ซัพพลายเออร์ / ชื่อรายการ"></label>
+        <label class="field"><span>ครบกำหนดชำระ</span><input type="date" id="journal-entry-due" title="ใช้กับรายการลูกหนี้/เจ้าหนี้ — เว้นว่าง = วันที่ + เครดิตเทอม"></label>
         <label class="field span-all"><span class="req">คำอธิบายรายการ</span><input type="text" id="journal-entry-description" placeholder="เช่น ขายสินค้าเป็นเงินสด ตามใบเสร็จเลขที่ 001" required></label>
       </div>
-      <div class="je-table">
-        <div class="je-head" aria-hidden="true"><span class="center">#</span><span>บัญชี</span><span class="right">เดบิต</span><span class="right">เครดิต</span><span></span></div>
+      <div class="journal-lines">
+        <div class="journal-lines-head" aria-hidden="true"><span class="center">#</span><span>บัญชี</span><span class="center">เดบิต</span><span class="center">เครดิต</span><span></span></div>
         <div id="journal-entry-lines"></div>
-        <div class="je-foot">
-          <div class="je-foot-tools"><button type="button" id="add-line" class="secondary small">+ เพิ่มบรรทัด</button><button type="button" id="balance-line" class="ghost small" title="ใส่ผลต่างลงในบรรทัดที่ยังว่าง">ปรับยอดให้ดุล</button></div>
+        <div class="journal-lines-foot">
+          <div class="journal-lines-tools"><button type="button" id="add-line" class="secondary small">+ เพิ่มบรรทัด</button><button type="button" id="balance-line" class="ghost small" title="ใส่ผลต่างลงในบรรทัดที่ยังว่าง">ปรับยอดให้ดุล</button><label class="switch" title="ป้อนจำนวนเงินในแถวคี่ (1, 3, 5, ...) แล้วเติมยอดเดียวกันในฝั่งตรงข้ามของแถวคู่ถัดไป (2, 4, 6, ...) ให้อัตโนมัติ"><input type="checkbox" id="journal-auto-mirror"><span class="switch-track" aria-hidden="true"></span><span>เติมยอดแถวคู่อัตโนมัติ</span></label></div>
           <span class="right" id="total-debit">0.00</span><span class="right" id="total-credit">0.00</span><span></span>
         </div>
       </div>
       <div id="journal-balance" class="balance-bar idle" aria-live="polite">กรอกจำนวนเงินอย่างน้อย 2 บรรทัด</div>
-      <p id="journal-entry-error" class="error" role="alert"></p>
       <div class="form-actions">
         <span class="muted"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> บันทึก · <kbd>Alt</kbd> + <kbd>N</kbd> เพิ่มบรรทัด</span>
         <span class="spacer"></span>
@@ -47,7 +49,7 @@
       </div>
     </form>
 
-    <div class="section-head"><h3>รายการที่บันทึกแล้ว</h3><span id="je-filter-summary" class="muted"></span></div>
+    <div class="section-head"><h3>รายการที่บันทึกแล้ว</h3><span id="journal-filter-summary" class="muted"></span></div>
     <div class="filter-bar">
       <label>ตั้งแต่ <input type="date" id="journal-entry-filter-start-date"></label>
       <label>ถึง <input type="date" id="journal-entry-filter-end-date"></label>

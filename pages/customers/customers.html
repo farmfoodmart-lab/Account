@@ -7,18 +7,19 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="../../style.css">
-  <link rel="modulepreload" href="../../js/data.js">
-  <script src="../../js/theme.js"></script>
+  <link rel="stylesheet" href="../../src/styles/main.css">
+  <link rel="modulepreload" href="../../src/core/store.js">
+  <script src="../../src/components/theme.js"></script>
 </head>
 <body>
-  <script src="../../js/shell.js"></script>
+  <script src="../../src/components/app-shell.js"></script>
+  <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
-      <div><h2>รายชื่อลูกค้า</h2><p class="page-sub">ทะเบียนลูกค้าใช้ในการบันทึกรายการ ลูกหนี้ และคำอธิบายอัตโนมัติ</p></div>
+      <div><h2>รายชื่อลูกค้า</h2><p class="page-sub">รายชื่อลูกค้าใช้เลือกในการบันทึกรายการ ลูกหนี้ และคำอธิบายอัตโนมัติ</p></div>
     </div>
     <form id="customer-form" class="card" autocomplete="off">
-      <div class="form-title"><h3>เพิ่ม / แก้ไขลูกค้า</h3></div>
+      <div class="form-title"><h3 id="customer-form-title">เพิ่ม / แก้ไขลูกค้า</h3></div>
       <div class="form-grid">
         <label class="field"><span class="req">รหัสลูกค้า</span><input type="text" id="customer-code" placeholder="เช่น C001" required></label>
         <label class="field span-2"><span class="req">ชื่อลูกค้า / บริษัท</span><input type="text" id="customer-name" placeholder="ชื่อลูกค้า" required></label>
@@ -28,14 +29,10 @@
       </div>
       <div class="form-actions"><button type="button" id="customer-cancel" class="secondary" hidden>ยกเลิก</button><button type="submit" id="customer-submit">เพิ่มลูกค้า</button></div>
     </form>
-    <div class="section-head"><h3>ทะเบียนลูกค้า <span id="customers-count" class="muted"></span></h3><label class="search-input" style="min-width:min(280px,100%)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input type="search" id="customers-search" placeholder="ค้นหาลูกค้า" aria-label="ค้นหาลูกค้า" data-table-filter="#customers-table" data-filter-count="#customers-count"></label></div>
-    <div class="table-wrap"><table id="customers-table"><thead><tr><th>รหัส</th><th>ชื่อ</th><th>โทรศัพท์</th><th>เลขผู้เสียภาษี</th><th>ที่อยู่</th><th class="col-act"></th></tr></thead><tbody></tbody></table></div>
 
-    <div class="section-head"><h3>รายชื่อจากไฟล์ <span id="customer-names-count" class="muted"></span></h3><label class="search-input" style="min-width:min(280px,100%)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input type="search" id="customer-names-search" placeholder="ค้นหาชื่อ" aria-label="ค้นหาชื่อ" data-table-filter="#customer-names-table" data-filter-count="#customer-names-count"></label></div>
-    <form id="customer-name-form" class="card inline-form" autocomplete="off">
-      <input type="text" id="customer-name-input" placeholder="ชื่อลูกค้า" aria-label="ชื่อลูกค้า" required><button type="button" id="customer-name-cancel" class="secondary" hidden>ยกเลิก</button><button type="submit" id="customer-name-submit">เพิ่มชื่อ</button>
-    </form>
-    <div class="table-wrap tall"><table id="customer-names-table"><thead><tr><th>ชื่อลูกค้า</th><th class="col-act"></th></tr></thead><tbody></tbody></table></div>
+    <div class="section-head"><h3>รายชื่อลูกค้า <span id="customer-list-count" class="muted"></span></h3><label class="search-input" style="min-width:min(280px,100%)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input type="search" id="customer-list-search" placeholder="ค้นหารหัส / ชื่อ / โทรศัพท์" aria-label="ค้นหาลูกค้า" data-table-filter="#customer-list-table" data-filter-count="#customer-list-count"></label></div>
+    <div id="customer-code-banner-slot"></div>
+    <div class="table-wrap tall"><table id="customer-list-table"><thead><tr><th class="col-code">รหัส</th><th>ชื่อลูกค้า</th><th>โทรศัพท์</th><th>เลขผู้เสียภาษี</th><th>ที่อยู่</th><th class="col-actions"></th></tr></thead><tbody></tbody></table></div>
     <div id="customer-name-import-files" class="import-files"></div>
   </main>
   <script type="module" src="customers.js"></script>

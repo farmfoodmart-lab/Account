@@ -7,12 +7,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="../../style.css">
-  <link rel="modulepreload" href="../../js/data.js">
-  <script src="../../js/theme.js"></script>
+  <link rel="stylesheet" href="../../src/styles/main.css">
+  <link rel="modulepreload" href="../../src/core/store.js">
+  <script src="../../src/components/theme.js"></script>
 </head>
 <body>
-  <script src="../../js/shell.js"></script>
+  <script src="../../src/components/app-shell.js"></script>
+  <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
       <div><h2>เอกสารรับเข้า</h2><p class="page-sub">เอกสารซื้อ/ค่าใช้จ่ายที่นำเข้าจากไฟล์ Excel</p></div>
@@ -20,7 +21,7 @@
     </div>
     <div id="incoming-document-import-files" class="import-files"></div>
     <div class="section-head"><h3>รายการ <span id="incoming-docs-count" class="muted"></span></h3><label class="search-input" style="min-width:min(280px,100%)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input type="search" id="incoming-docs-search" placeholder="ค้นหาเอกสาร / ซัพพลายเออร์" aria-label="ค้นหาเอกสาร / ซัพพลายเออร์" data-table-filter="#incoming-docs-table" data-filter-count="#incoming-docs-count"></label></div>
-    <div class="table-wrap tall"><table id="incoming-docs-table"><thead><tr><th class="col-date">วันที่</th><th>ประเภทเอกสาร</th><th>ซัพพลายเออร์</th><th class="right">ยอดรวม</th><th class="right">ส่วนลด</th><th>รูปแบบการชำระเงิน</th><th class="col-act"></th></tr></thead><tbody></tbody></table></div>
+    <div class="table-wrap tall"><table id="incoming-docs-table"><thead><tr><th class="col-date">วันที่</th><th>ประเภทเอกสาร</th><th>ซัพพลายเออร์</th><th class="right">ยอดรวม</th><th class="right">ส่วนลด</th><th>รูปแบบการชำระเงิน</th><th class="col-actions"></th></tr></thead><tbody></tbody></table></div>
   </main>
   <script type="module" src="incoming-docs.js"></script>
 </body>

@@ -7,15 +7,16 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="../../style.css">
-  <link rel="modulepreload" href="../../js/data.js">
-  <script src="../../js/theme.js"></script>
+  <link rel="stylesheet" href="../../src/styles/main.css">
+  <link rel="modulepreload" href="../../src/core/store.js">
+  <script src="../../src/components/theme.js"></script>
 </head>
 <body>
-  <script src="../../js/shell.js"></script>
+  <script src="../../src/components/app-shell.js"></script>
+  <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
-      <div><h2>บัญชีแยกประเภท</h2><p class="page-sub">ความเคลื่อนไหวและยอดคงเหลือสะสมของแต่ละบัญชี คลิกที่บัญชีเพื่อดูรายละเอียด</p></div>
+      <div><h2>บัญชีแยกประเภท</h2><p class="page-sub">ความเคลื่อนไหวและยอดคงเหลือของแต่ละบัญชีในช่วงที่เลือก คลิกที่บัญชีเพื่อดูรายละเอียด</p></div>
       <div class="page-actions"><button type="button" id="ledger-toggle-all" class="secondary">ขยายทั้งหมด</button><button type="button" id="ledger-export" class="secondary">ส่งออก CSV</button><button type="button" class="secondary" onclick="window.print()">พิมพ์</button></div>
     </div>
     <div class="filter-bar">
@@ -24,9 +25,9 @@
       <label>ตั้งแต่ <input type="date" id="ledger-from"></label>
       <label>ถึง <input type="date" id="ledger-to"></label>
       <label class="grow">ค้นหารายการ <input type="search" id="ledger-search" placeholder="คำอธิบาย / เลขที่เอกสาร"></label>
+      <label class="check" title="ไม่ติ๊ก = ยอดคงเหลือนับเฉพาะรายการในช่วงที่เลือก"><input type="checkbox" id="ledger-include-opening"> รวมยอดยกมา</label>
       <label class="check"><input type="checkbox" id="ledger-hide-empty" checked> ซ่อนบัญชีที่ไม่มีความเคลื่อนไหว</label>
     </div>
-    <div id="ledger-summary"></div>
     <div id="ledger-view"><div class="skeleton"></div></div>
   </main>
   <script type="module" src="ledger.js"></script>

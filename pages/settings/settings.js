@@ -1,81 +1,94 @@
+/**
+ * @file หน้า "การตั้งค่า"
+ *
+ * - ข้อมูลกิจการ งวดบัญชี และอัตรา VAT เริ่มต้น
+ * - บัญชีที่ใช้ลงบัญชีอัตโนมัติ (ลูกหนี้ เจ้าหนี้ ภาษี กำไรสะสม)
+ * - ปิดงวดบัญชี (สร้างรายการปิดบัญชี) และล็อกงวด
+ * - สำรอง/กู้คืนข้อมูลเป็นไฟล์ JSON
+ */
 import {
-  ACCOUNT_ROLES,
-  AMOUNT_EPSILON,
-  accountLabel,
-  accountOptionsHtml,
-  authReady,
-  fmt,
-  fmtDateDMY,
-  fmtInt,
-  isLocked,
-  load,
+  DATA_COLLECTIONS,
+  commitChanges,
+  createDefaultState,
+  loadData,
   onDataRefresh,
-  replaceState,
-  roleAccount,
-  save,
   state,
-} from "../../js/data.js";
-import { accountNet, collectTotals } from "../../js/reports.js";
-import { round2, sortEntries, upsertEntry } from "../../js/posting.js";
-import {
-  confirmAction,
-  downloadJson,
-  fileStamp,
-  toastError,
-  toastSuccess,
-} from "../../js/ui.js";
+} from "../../src/core/store.js";
+import { authReady } from "../../src/core/auth.js";
+import { ACCOUNT_ROLES } from "../../src/accounting/constants.js";
+import { findAccountForRole, formatAccountLabel, renderAccountOptions } from "../../src/accounting/accounts.js";
+import { buildClosingLines, calculateClosingBalances } from "../../src/accounting/closing.js";
+import { isDateLocked } from "../../src/accounting/journal.js";
+import { sortEntriesByDate, upsertJournalEntry } from "../../src/accounting/posting.js";
+import { DEFAULT_CREDIT_DAYS } from "../../src/accounting/subledger.js";
+import { notifyError, notifySuccess } from "../../src/components/notifications.js";
+import { confirmDialog } from "../../src/components/dialogs.js";
+import { getFileDateStamp } from "../../src/utils/date.js";
+import { byId } from "../../src/utils/dom.js";
+import { downloadJson } from "../../src/utils/download.js";
+import { formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
 
-const $ = (id) => document.getElementById(id);
-const settingsForm = $("settings-form");
-const backupStatusMessage = $("backup-msg");
-const backupFileInput = $("backup-import");
+const settingsForm = byId("settings-form");
+const closingDateInput = byId("close-date");
+const backupMessage = byId("backup-msg");
+const backupFileInput = byId("backup-import");
 
-function renderAccountMap() {
-  const map = state.settings.accountMap || {};
-  $("settings-account-map").innerHTML = Object.entries(ACCOUNT_ROLES).map(([role, config]) => {
-    const resolved = roleAccount(role);
-    const hint = map[role] ? "" : resolved ? `อัตโนมัติ: ${accountLabel(resolved)}` : "ไม่พบบัญชีที่เหมาะสม";
-    return `<label class="field"><span>${config.label}</span><select data-role="${role}">${accountOptionsHtml(map[role] || "", "— เลือกอัตโนมัติ —")}</select><span class="hint-text">${hint}</span></label>`;
+/** เวอร์ชันของรูปแบบไฟล์สำรองข้อมูล */
+const BACKUP_FORMAT_VERSION = 2;
+
+/* ------------------------------------------------------------------ */
+/* การแสดงผล                                                            */
+/* ------------------------------------------------------------------ */
+
+/** ช่องเลือกบัญชีของแต่ละบทบาท พร้อมบอกบัญชีที่ระบบจะเลือกให้ถ้าเว้นว่าง */
+function renderAccountRoleFields() {
+  const configuredAccounts = state.settings.accountMap || {};
+  byId("settings-account-map").innerHTML = Object.entries(ACCOUNT_ROLES).map(([role, roleConfig]) => {
+    const resolvedAccount = findAccountForRole(role);
+    let hint = "";
+    if (!configuredAccounts[role]) hint = resolvedAccount ? `อัตโนมัติ: ${formatAccountLabel(resolvedAccount)}` : "ไม่พบบัญชีที่เหมาะสม";
+    return `<label class="field">
+      <span>${roleConfig.label}</span>
+      <select data-role="${role}">${renderAccountOptions(configuredAccounts[role] || "", "— เลือกอัตโนมัติ —")}</select>
+      <span class="hint-text">${hint}</span>
+    </label>`;
   }).join("");
 }
 
 function renderLockStatus() {
-  const lock = state.settings.lockDate;
-  $("lock-status").innerHTML = lock
-    ? `<span class="badge warning dot">ล็อกถึง ${fmtDateDMY(lock)}</span>`
+  const lockDate = state.settings.lockDate;
+  byId("lock-status").innerHTML = lockDate
+    ? `<span class="badge warning dot">ล็อกถึง ${formatDate(lockDate)}</span>`
     : '<span class="badge">ยังไม่ล็อกงวด</span>';
-  $("lock-date").value = lock || "";
+  byId("lock-date").value = lockDate || "";
 }
 
-/** Revenue/expense balances up to `date` that a closing entry would transfer. */
-function closingPreview(date) {
-  const totals = collectTotals(state.entries, { to: date });
-  const rows = state.accounts
-    .filter((account) => account.type === "revenue" || account.type === "expense")
-    .map((account) => ({ account, net: round2(accountNet(account, totals)) }))
-    .filter((row) => Math.abs(row.net) >= AMOUNT_EPSILON);
-  const profit = rows.reduce((sum, row) => sum + (row.account.type === "revenue" ? row.net : -row.net), 0);
-  return { rows, profit: round2(profit) };
-}
-
-function renderClosePreview() {
-  const date = $("close-date").value;
-  if (!date) {
-    $("close-preview").textContent = "เลือกวันที่สิ้นงวดเพื่อดูยอดที่จะปิด";
+/** ตัวอย่างยอดที่จะปิด เมื่อเลือกวันที่ปิดบัญชี */
+function renderClosingPreview() {
+  const previewElement = byId("close-preview");
+  const closingDate = closingDateInput.value;
+  if (!closingDate) {
+    previewElement.textContent = "เลือกวันที่สิ้นงวดเพื่อดูยอดที่จะปิด";
     return;
   }
-  const { rows, profit } = closingPreview(date);
-  const retained = roleAccount("retained");
-  $("close-preview").innerHTML = rows.length
-    ? `ปิด ${fmtInt(rows.length)} บัญชี · ${profit >= 0 ? "กำไร" : "ขาดทุน"}สุทธิ <strong>${fmt(Math.abs(profit))}</strong> โอนเข้า ${retained ? accountLabel(retained) : '<span class="unbalanced">ยังไม่มีบัญชีกำไรสะสม</span>'}`
-    : "ไม่มียอดรายได้/ค่าใช้จ่ายคงค้างให้ปิด (อาจปิดบัญชีไปแล้ว)";
+  const { balances, netProfit } = calculateClosingBalances(state.accounts, state.entries, closingDate);
+  if (!balances.length) {
+    previewElement.textContent = "ไม่มียอดรายได้/ค่าใช้จ่ายคงค้างให้ปิด (อาจปิดบัญชีไปแล้ว)";
+    return;
+  }
+  const retainedEarningsAccount = findAccountForRole("retained");
+  const destination = retainedEarningsAccount
+    ? formatAccountLabel(retainedEarningsAccount)
+    : '<span class="unbalanced">ยังไม่มีบัญชีกำไรสะสม</span>';
+  previewElement.innerHTML = `ปิด ${formatNumber(balances.length)} บัญชี · ${netProfit >= 0 ? "กำไร" : "ขาดทุน"}สุทธิ <strong>${formatMoney(Math.abs(netProfit))}</strong> โอนเข้า ${destination}`;
 }
 
-function renderStats() {
-  const stats = [
+function renderDataCounts() {
+  const counts = [
     ["ผังบัญชี", state.accounts.length],
     ["รายการบันทึก", state.entries.length],
     ["ลูกค้า (ทะเบียน)", state.customers.length],
+    ["เจ้าหนี้ (ทะเบียน)", state.suppliers.length],
     ["รายชื่อจากไฟล์", state.customerNames.length],
     ["ลูกหนี้", state.receivables.length],
     ["เจ้าหนี้", state.payables.length],
@@ -83,162 +96,200 @@ function renderStats() {
     ["ต้นทุน/ขาย", state.customerCosts.length],
     ["เอกสารรับเข้า", state.incomingDocs.length],
   ];
-  $("settings-stats").innerHTML = stats.map(([label, count]) => `<div><small>${label}</small><strong>${fmtInt(count)}</strong></div>`).join("");
+  byId("settings-stats").innerHTML = counts
+    .map(([label, count]) => `<div><small>${label}</small><strong>${formatNumber(count)}</strong></div>`)
+    .join("");
 }
 
-function renderSettings() {
-  const settings = state.settings || {};
-  $("settings-company").value = settings.company || "";
-  $("settings-tax-id").value = settings.taxId || "";
-  $("settings-period-start").value = settings.periodStart || "";
-  $("settings-period-end").value = settings.periodEnd || "";
-  $("settings-currency").value = settings.currency || "THB";
-  $("settings-note").value = settings.note || "";
-  $("settings-vat-rate").value = settings.vatRate ?? 7;
-  if (!$("close-date").value) $("close-date").value = settings.periodEnd || "";
-  renderAccountMap();
+function renderSettingsPage() {
+  const { settings } = state;
+  byId("settings-company").value = settings.company || "";
+  byId("settings-tax-id").value = settings.taxId || "";
+  byId("settings-period-start").value = settings.periodStart || "";
+  byId("settings-period-end").value = settings.periodEnd || "";
+  byId("settings-currency").value = settings.currency || "THB";
+  byId("settings-note").value = settings.note || "";
+  byId("settings-vat-rate").value = settings.vatRate ?? 7;
+  byId("settings-credit-days").value = settings.creditDays ?? DEFAULT_CREDIT_DAYS;
+  if (!closingDateInput.value) closingDateInput.value = settings.periodEnd || "";
+  renderAccountRoleFields();
   renderLockStatus();
-  renderClosePreview();
-  renderStats();
+  renderClosingPreview();
+  renderDataCounts();
 }
 
-async function saveSettings(patch, message) {
-  const previous = JSON.parse(JSON.stringify(state));
-  replaceState({ ...state, settings: { ...state.settings, ...patch } });
-  if (!(await save(["settings"]))) {
-    replaceState(previous);
-    renderSettings();
-    return false;
-  }
-  renderSettings();
-  toastSuccess(message);
-  return true;
+/**
+ * บันทึกเฉพาะฟิลด์ที่เปลี่ยนใน settings
+ * @param {Partial<typeof state.settings>} settingsChanges
+ * @param {string} successMessage
+ */
+async function saveSettings(settingsChanges, successMessage) {
+  const isSaved = await commitChanges({ settings: { ...state.settings, ...settingsChanges } });
+  renderSettingsPage();
+  if (isSaved) notifySuccess(successMessage);
+  return isSaved;
 }
 
-settingsForm.addEventListener("submit", async (event) => {
+/* ------------------------------------------------------------------ */
+/* ข้อมูลกิจการ / งวดบัญชี / บัญชีลงอัตโนมัติ                              */
+/* ------------------------------------------------------------------ */
+
+async function handleSettingsSubmit(event) {
   event.preventDefault();
-  const periodStart = $("settings-period-start").value;
-  const periodEnd = $("settings-period-end").value;
+  const periodStart = byId("settings-period-start").value;
+  const periodEnd = byId("settings-period-end").value;
   if (periodStart && periodEnd && periodStart > periodEnd) {
-    toastError("วันที่เริ่มต้นงวดต้องไม่มากกว่าวันที่สิ้นสุด");
+    notifyError("วันที่เริ่มต้นงวดต้องไม่มากกว่าวันที่สิ้นสุด");
     return;
   }
+
+  // เก็บเฉพาะบทบาทที่ผู้ใช้เลือกบัญชีเอง (ที่เว้นว่าง = ให้ระบบเลือกอัตโนมัติ)
   const accountMap = {};
   settingsForm.querySelectorAll("[data-role]").forEach((select) => {
     if (select.value) accountMap[select.dataset.role] = select.value;
   });
+
   await saveSettings({
-    company: $("settings-company").value.trim(),
-    taxId: $("settings-tax-id").value.trim(),
+    company: byId("settings-company").value.trim(),
+    taxId: byId("settings-tax-id").value.trim(),
     periodStart,
     periodEnd,
-    currency: $("settings-currency").value.trim() || "THB",
-    note: $("settings-note").value.trim(),
-    vatRate: Number($("settings-vat-rate").value) || 0,
+    currency: byId("settings-currency").value.trim() || "THB",
+    note: byId("settings-note").value.trim(),
+    vatRate: Number(byId("settings-vat-rate").value) || 0,
+    creditDays: Math.max(0, Math.round(Number(byId("settings-credit-days").value) || 0)),
     accountMap,
   }, "บันทึกการตั้งค่าเรียบร้อย");
-});
+}
 
-/* ---------- period close & lock ---------- */
-$("close-date").addEventListener("change", renderClosePreview);
+/* ------------------------------------------------------------------ */
+/* ปิดงวดบัญชีและล็อกงวด                                                 */
+/* ------------------------------------------------------------------ */
 
-$("close-run").addEventListener("click", async () => {
-  const date = $("close-date").value;
-  if (!date) return toastError("เลือกวันที่ปิดบัญชี");
-  if (isLocked(date)) return toastError("วันที่นี้อยู่ในงวดที่ล็อกแล้ว ปลดล็อกก่อนหากต้องการปิดบัญชีใหม่");
-  const retained = roleAccount("retained");
-  if (!retained) return toastError("ยังไม่มีบัญชีกำไรสะสม (ประเภทส่วนของเจ้าของ) — เพิ่มในผังบัญชีหรือกำหนดในหัวข้อบัญชีสำหรับลงบัญชีอัตโนมัติ");
-  const { rows, profit } = closingPreview(date);
-  if (!rows.length) return toastError("ไม่มียอดรายได้/ค่าใช้จ่ายให้ปิด");
-  const lockAfter = $("close-lock").checked;
-  if (!(await confirmAction(`สร้างรายการปิดบัญชี ณ วันที่ ${fmtDateDMY(date)}: ปิด ${rows.length} บัญชี ${profit >= 0 ? "กำไร" : "ขาดทุน"}สุทธิ ${fmt(Math.abs(profit))} โอนเข้า ${accountLabel(retained)}${lockAfter ? " และล็อกงวดถึงวันที่นี้" : ""}?`, { title: "ปิดงวดบัญชี", confirmText: "ปิดบัญชี", tone: "primary" }))) return;
-
-  // Debit revenues / credit expenses to zero them; the difference goes to retained earnings.
-  const lines = rows.map(({ account, net }) => {
-    const debitSide = account.type === "revenue" ? net : -net;
-    return debitSide > 0 ? { accountId: account.id, debit: debitSide, credit: 0 } : { accountId: account.id, debit: 0, credit: -debitSide };
-  });
-  if (profit > 0) lines.push({ accountId: retained.id, debit: 0, credit: profit });
-  else if (profit < 0) lines.push({ accountId: retained.id, debit: -profit, credit: 0 });
-  const entries = state.entries.slice();
-  const entryId = upsertEntry(entries, { date, desc: `ปิดบัญชีรายได้และค่าใช้จ่ายเข้ากำไรสะสม ณ ${fmtDateDMY(date)}`, lines, source: { type: "closing", id: date } });
-  const closing = entries.find((entry) => entry.id === entryId);
-  closing.kind = "closing";
-
-  const previous = JSON.parse(JSON.stringify(state));
-  replaceState({ ...state, entries: sortEntries(entries), settings: { ...state.settings, ...(lockAfter ? { lockDate: date } : {}) } });
-  if (!(await save(lockAfter ? ["entries", "settings"] : ["entries"]))) {
-    replaceState(previous);
-    renderSettings();
+async function createClosingEntry() {
+  const closingDate = closingDateInput.value;
+  if (!closingDate) {
+    notifyError("เลือกวันที่ปิดบัญชี");
     return;
   }
-  renderSettings();
-  toastSuccess(`สร้างรายการปิดบัญชี ${closing.docNo} เรียบร้อย${lockAfter ? " และล็อกงวดแล้ว" : ""}`);
-});
+  if (isDateLocked(closingDate)) {
+    notifyError("วันที่นี้อยู่ในงวดที่ล็อกแล้ว ปลดล็อกก่อนหากต้องการปิดบัญชีใหม่");
+    return;
+  }
+  const retainedEarningsAccount = findAccountForRole("retained");
+  if (!retainedEarningsAccount) {
+    notifyError("ยังไม่มีบัญชีกำไรสะสม (ประเภทส่วนของเจ้าของ) — เพิ่มในผังบัญชีหรือกำหนดในหัวข้อบัญชีสำหรับลงบัญชีอัตโนมัติ");
+    return;
+  }
+  const { balances, netProfit } = calculateClosingBalances(state.accounts, state.entries, closingDate);
+  if (!balances.length) {
+    notifyError("ไม่มียอดรายได้/ค่าใช้จ่ายให้ปิด");
+    return;
+  }
 
-$("lock-save").addEventListener("click", async () => {
-  const date = $("lock-date").value;
-  if (!date) return toastError("เลือกวันที่ล็อก");
-  if (!(await confirmAction(`ล็อกรายการทั้งหมดที่ลงวันที่ถึง ${fmtDateDMY(date)}? รายการในช่วงนี้จะแก้ไข/ลบ/เพิ่มไม่ได้`, { title: "ล็อกงวดบัญชี", confirmText: "ล็อก", tone: "primary" }))) return;
-  await saveSettings({ lockDate: date }, `ล็อกงวดถึง ${fmtDateDMY(date)} แล้ว`);
-});
+  const shouldLockAfterClosing = byId("close-lock").checked;
+  const confirmMessage = `สร้างรายการปิดบัญชี ณ วันที่ ${formatDate(closingDate)}: ปิด ${balances.length} บัญชี `
+    + `${netProfit >= 0 ? "กำไร" : "ขาดทุน"}สุทธิ ${formatMoney(Math.abs(netProfit))} โอนเข้า ${formatAccountLabel(retainedEarningsAccount)}`
+    + `${shouldLockAfterClosing ? " และล็อกงวดถึงวันที่นี้" : ""}?`;
+  if (!(await confirmDialog(confirmMessage, { title: "ปิดงวดบัญชี", confirmText: "ปิดบัญชี", tone: "primary" }))) return;
 
-$("lock-clear").addEventListener("click", async () => {
+  const entries = state.entries.slice();
+  const closingEntryId = upsertJournalEntry(entries, {
+    date: closingDate,
+    desc: `ปิดบัญชีรายได้และค่าใช้จ่ายเข้ากำไรสะสม ณ ${formatDate(closingDate)}`,
+    lines: buildClosingLines(balances, netProfit, retainedEarningsAccount.id),
+    source: { type: "closing", id: closingDate },
+  });
+  const closingEntry = entries.find((entry) => entry.id === closingEntryId);
+  closingEntry.kind = "closing";
+
+  const changes = { entries: sortEntriesByDate(entries) };
+  if (shouldLockAfterClosing) changes.settings = { ...state.settings, lockDate: closingDate };
+  const isSaved = await commitChanges(changes);
+  renderSettingsPage();
+  if (isSaved) {
+    notifySuccess(`สร้างรายการปิดบัญชี ${closingEntry.docNo} เรียบร้อย${shouldLockAfterClosing ? " และล็อกงวดแล้ว" : ""}`);
+  }
+}
+
+async function lockPeriod() {
+  const lockDate = byId("lock-date").value;
+  if (!lockDate) {
+    notifyError("เลือกวันที่ล็อก");
+    return;
+  }
+  const confirmed = await confirmDialog(
+    `ล็อกรายการทั้งหมดที่ลงวันที่ถึง ${formatDate(lockDate)}? รายการในช่วงนี้จะแก้ไข/ลบ/เพิ่มไม่ได้`,
+    { title: "ล็อกงวดบัญชี", confirmText: "ล็อก", tone: "primary" },
+  );
+  if (confirmed) await saveSettings({ lockDate }, `ล็อกงวดถึง ${formatDate(lockDate)} แล้ว`);
+}
+
+async function unlockPeriod() {
   if (!state.settings.lockDate) return;
-  if (!(await confirmAction("ปลดล็อกงวดบัญชี? รายการในงวดที่ปิดแล้วจะแก้ไขได้อีกครั้ง"))) return;
+  if (!(await confirmDialog("ปลดล็อกงวดบัญชี? รายการในงวดที่ปิดแล้วจะแก้ไขได้อีกครั้ง"))) return;
   await saveSettings({ lockDate: "" }, "ปลดล็อกงวดบัญชีแล้ว");
-});
+}
 
-/* ---------- backup ---------- */
-$("backup-export").addEventListener("click", () => {
-  downloadJson(`accounting-backup-${fileStamp()}.json`, {
+/* ------------------------------------------------------------------ */
+/* สำรองและกู้คืนข้อมูล                                                   */
+/* ------------------------------------------------------------------ */
+
+function downloadBackup() {
+  downloadJson(`accounting-backup-${getFileDateStamp()}.json`, {
     exportedAt: new Date().toISOString(),
-    version: 2,
+    version: BACKUP_FORMAT_VERSION,
     data: state,
   });
-  backupStatusMessage.textContent = "ดาวน์โหลดไฟล์สำรองข้อมูลเรียบร้อย";
-  toastSuccess("สำรองข้อมูลเรียบร้อย");
-});
+  backupMessage.textContent = "ดาวน์โหลดไฟล์สำรองข้อมูลเรียบร้อย";
+  notifySuccess("สำรองข้อมูลเรียบร้อย");
+}
 
-backupFileInput.addEventListener("change", async () => {
-  const file = backupFileInput.files[0];
-  if (!file) return;
-  if (!(await confirmAction(`กู้คืนข้อมูลจากไฟล์ "${file.name}"? ข้อมูลปัจจุบันจะถูกเขียนทับทั้งหมด`))) {
-    backupFileInput.value = "";
-    return;
-  }
-  const previous = JSON.parse(JSON.stringify(state));
+async function restoreBackup() {
+  const backupFile = backupFileInput.files[0];
+  if (!backupFile) return;
   try {
-    const parsed = JSON.parse(await file.text());
-    const payload = parsed && parsed.data ? parsed.data : parsed;
-    if (!payload || !Array.isArray(payload.accounts)) {
-      throw new Error("ไฟล์ไม่ใช่ไฟล์สำรองของระบบนี้");
-    }
-    replaceState(payload);
-    if (!(await save())) {
-      replaceState(previous);
-      renderSettings();
-      backupStatusMessage.textContent = "กู้คืนไม่สำเร็จ: บันทึกข้อมูลไม่ผ่าน";
+    if (!(await confirmDialog(`กู้คืนข้อมูลจากไฟล์ "${backupFile.name}"? ข้อมูลปัจจุบันจะถูกเขียนทับทั้งหมด`))) return;
+
+    const parsedFile = JSON.parse(await backupFile.text());
+    // รองรับทั้งไฟล์แบบมี { data: ... } และไฟล์รุ่นเก่าที่เก็บข้อมูลไว้ชั้นบนสุด
+    const backupData = parsedFile && parsedFile.data ? parsedFile.data : parsedFile;
+    if (!backupData || !Array.isArray(backupData.accounts)) throw new Error("ไฟล์ไม่ใช่ไฟล์สำรองของระบบนี้");
+
+    // แทนที่ข้อมูลทั้งหมด: ชุดข้อมูลที่ไม่มีในไฟล์จะกลายเป็นค่าว่าง
+    const restoredState = { ...createDefaultState(), ...backupData };
+    const isSaved = await commitChanges(restoredState, [...DATA_COLLECTIONS, "settings", "importFiles"]);
+    renderSettingsPage();
+    if (!isSaved) {
+      backupMessage.textContent = "กู้คืนไม่สำเร็จ: บันทึกข้อมูลไม่ผ่าน";
       return;
     }
-    renderSettings();
-    backupStatusMessage.textContent = `กู้คืนข้อมูลเรียบร้อย (${fmtInt(state.accounts.length)} บัญชี, ${fmtInt(state.entries.length)} รายการ)`;
-    toastSuccess("กู้คืนข้อมูลเรียบร้อย");
+    backupMessage.textContent = `กู้คืนข้อมูลเรียบร้อย (${formatNumber(state.accounts.length)} บัญชี, ${formatNumber(state.entries.length)} รายการ)`;
+    notifySuccess("กู้คืนข้อมูลเรียบร้อย");
   } catch (error) {
-    replaceState(previous);
-    renderSettings();
     console.error(error);
-    backupStatusMessage.textContent = `กู้คืนไม่สำเร็จ: ${error.message || error}`;
-    toastError("กู้คืนข้อมูลไม่สำเร็จ");
+    backupMessage.textContent = `กู้คืนไม่สำเร็จ: ${error.message || error}`;
+    notifyError("กู้คืนข้อมูลไม่สำเร็จ");
   } finally {
     backupFileInput.value = "";
   }
-});
+}
 
-if (await load()) {
-  renderSettings();
-  onDataRefresh(renderSettings);
-  authReady.then((user) => {
-    if (user) $("settings-user").textContent = `เข้าสู่ระบบเป็น ${user.email || ""}`;
-  });
+/* ------------------------------------------------------------------ */
+/* ผูกอีเวนต์                                                           */
+/* ------------------------------------------------------------------ */
+
+settingsForm.addEventListener("submit", handleSettingsSubmit);
+closingDateInput.addEventListener("change", renderClosingPreview);
+byId("close-run").addEventListener("click", createClosingEntry);
+byId("lock-save").addEventListener("click", lockPeriod);
+byId("lock-clear").addEventListener("click", unlockPeriod);
+byId("backup-export").addEventListener("click", downloadBackup);
+backupFileInput.addEventListener("change", restoreBackup);
+
+if (await loadData()) {
+  renderSettingsPage();
+  onDataRefresh(renderSettingsPage);
+  const currentUser = await authReady;
+  if (currentUser) byId("settings-user").textContent = `เข้าสู่ระบบเป็น ${currentUser.email || ""}`;
 }

@@ -1,119 +1,171 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+/**
+ * @file คลังข้อมูลกลางของแอป (state) และการซิงก์กับ Firestore
+ *
+ * ภาพรวมการทำงาน
+ * ---------------
+ * 1. หน้าเว็บเรียก `loadData([...ชุดข้อมูลที่ต้องใช้])`
+ * 2. ถ้ามีสำเนาในแคชของเครื่องครบ → ใส่ลง `state` แล้วคืนค่าทันที (หน้าแสดงผลได้เลย)
+ *    จากนั้นตรวจกับ Firestore เบื้องหลัง ถ้ามีข้อมูลใหม่จะยิงอีเวนต์ให้หน้าวาดใหม่ (ดู onDataRefresh)
+ * 3. ถ้าไม่มีแคช → รอดาวน์โหลดจาก Firestore ก่อนคืนค่า
+ * 4. หน้าเว็บแก้ไข `state` แล้วเรียก `saveData([...ชุดข้อมูลที่แก้])` เพื่อบันทึก
+ *
+ * โครงสร้างใน Firestore (collection "accounting")
+ * -----------------------------------------------
+ * - เอกสารละชุดข้อมูล เช่น "entries" = { items: [...] }
+ * - ถ้าข้อมูลใหญ่เกิน ~700KB จะแบ่งเป็นหลายเอกสาร: "entries" = { chunks: 3 } + "entries_0", "entries_1", ...
+ * - "meta"  = { settings, importFiles }
+ * - "revs"  = รหัสรุ่น (revision) ของแต่ละชุดข้อมูล เปลี่ยนทุกครั้งที่บันทึก
+ *             ใช้ตรวจว่าแคชยังตรงกับเซิร์ฟเวอร์หรือไม่ และกันการบันทึกทับข้อมูลที่เครื่องอื่นเพิ่งแก้
+ * - "main"  = โครงสร้างแบบเก่า (เอกสารเดียว) ระบบจะย้ายข้อมูลให้อัตโนมัติครั้งแรก
+ *
+ * หมายเหตุ: ชื่อฟิลด์ที่เก็บในฐานข้อมูล (เช่น docNo, desc, autoDesc) ห้ามเปลี่ยนชื่อ
+ * เพราะจะทำให้อ่านข้อมูลเดิมไม่ได้
+ */
 import {
-  deleteDoc,
-  doc,
-  getDoc,
-  getFirestore,
-  setDoc,
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-import {
-  createUserWithEmailAndPassword,
-  getAuth,
-  onAuthStateChanged,
-  sendPasswordResetEmail,
-  signInWithEmailAndPassword,
-  signOut,
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
-import { toast, toastError } from "./ui.js";
-import { cacheClear, cacheGetMany, cacheSet } from "./cache.js";
-import { toIsoDate } from "./reports.js";
+  accountingDocument,
+  createWriteBatch,
+  deleteDoc as firestoreDeleteDoc,
+  getDoc as firestoreGetDoc,
+  setDoc as firestoreSetDoc,
+} from "./firebase.js";
+import { authReady, getRememberedUserId, redirectToLogin, rememberUser } from "./auth.js";
+import { readCacheEntries, writeCacheEntry } from "./local-cache.js";
+import { logAlert, notifyError, notify } from "../components/notifications.js";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyAGZ92GWjcTGUt4m8RxX978iqVgrYbaafs",
-  authDomain: "accountai-3e294.firebaseapp.com",
-  projectId: "accountai-3e294",
-  storageBucket: "accountai-3e294.firebasestorage.app",
-  messagingSenderId: "170552461513",
-  appId: "1:170552461513:web:a36a202aaae7694f836518",
-  measurementId: "G-R2K48SX86X",
-};
-
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp);
-const auth = getAuth(firebaseApp);
-const DOC_MAIN = doc(db, "accounting", "main");
-const DATA_KEYS = [
-  "accounts",
-  "entries",
-  "customers",
-  "receivables",
-  "payables",
-  "autoDesc",
-  "customerNames",
-  "customerCosts",
-  "incomingDocs",
+/** ชุดข้อมูลแบบรายการ (array) ที่เก็บแยกเอกสารละชุด */
+export const DATA_COLLECTIONS = [
+  "accounts",      // ผังบัญชี
+  "entries",       // รายการในสมุดรายวัน
+  "customers",     // ทะเบียนลูกค้า
+  "suppliers",     // ทะเบียนเจ้าหนี้ (ผู้ขาย/ซัพพลายเออร์)
+  "receivables",   // ลูกหนี้
+  "payables",      // เจ้าหนี้
+  "autoDesc",      // แม่แบบคำอธิบายอัตโนมัติ
+  "customerNames", // รายชื่อลูกค้าจากไฟล์
+  "customerCosts", // ต้นทุน/ราคาขายตามลูกค้า
+  "incomingDocs",  // เอกสารรับเข้า
 ];
-const DATA_REFS = Object.fromEntries(
-  DATA_KEYS.map((key) => [key, doc(db, "accounting", key)]),
-);
-const META_REF = doc(db, "accounting", "meta");
-/** Revision stamp per stored document; lets a page skip re-downloading unchanged data. */
-const REVS_REF = doc(db, "accounting", "revs");
-const CHUNK_SIZE = 700000;
-export const AMOUNT_EPSILON = 0.005;
 
-export const TYPES = {
-  asset: "สินทรัพย์",
-  liability: "หนี้สิน",
-  equity: "ทุน",
-  revenue: "รายได้",
-  expense: "ค่าใช้จ่าย",
-};
+/** คีย์ของเอกสารรวม settings + importFiles */
+const META_KEY = "meta";
 
-export const normalDebit = (type) => type === "asset" || type === "expense";
+/**
+ * ขนาดของ chunk ใหม่ (ตัวอักษร JSON) — เล็กพอให้การบันทึกแต่ละครั้งส่งข้อมูลน้อย จึงเร็ว
+ * (Firestore จำกัดเอกสารละ 1MB)
+ */
+const MAX_CHUNK_SIZE = 150000;
+/** ขนาด chunk ที่เวอร์ชันก่อนหน้าใช้ — ใช้แบ่งข้อมูลในแคชรุ่นเก่าให้ตรงกับบนเซิร์ฟเวอร์ */
+const LEGACY_CHUNK_SIZE = 700000;
+/**
+ * chunk เดิมที่แก้ไขแล้วโตขึ้น ยอมให้ใหญ่ได้ถึงค่านี้ก่อนจะแยก
+ * (ถ้าแยก chunk ตรงกลาง chunk ถัดไปทั้งหมดจะเลื่อนตำแหน่ง และต้องเขียนใหม่ทั้งหมด)
+ */
+const MAX_GROWN_CHUNK_SIZE = 800000;
+/** รวมการเขียนเป็นชุดเดียว (batch) ได้เมื่อข้อมูลไม่เกินนี้ (Firestore จำกัดคำขอละ 10MB / 500 รายการ) */
+const MAX_BATCH_BYTES = 8 * 1024 * 1024;
+const MAX_BATCH_OPERATIONS = 450;
 
-export const defaultState = () => ({
-  accounts: [],
-  entries: [],
-  customers: [],
-  receivables: [],
-  payables: [],
-  autoDesc: [],
-  customerNames: [],
-  customerCosts: [],
-  incomingDocs: [],
-  importFiles: [],
-  settings: {
-    company: "",
-    taxId: "",
-    periodStart: "",
-    periodEnd: "",
-    currency: "THB",
-    note: "",
-    lockDate: "",
-    vatRate: 7,
-    accountMap: {},
-  },
-});
+const LEGACY_MAIN_DOCUMENT = accountingDocument("main");
+const META_DOCUMENT = accountingDocument(META_KEY);
+const REVISIONS_DOCUMENT = accountingDocument("revs");
 
-export let state = defaultState();
-let ready = false;
-let chunkCounts = Object.fromEntries(DATA_KEYS.map((key) => [key, 0]));
-let revs = {};
-let syncPromise = null;
+/** อีเวนต์ที่ยิงเมื่อการซิงก์เบื้องหลังได้ข้อมูลใหม่ */
+const DATA_REFRESH_EVENT = "app-data-refresh";
 
-export function setStatus(text, isError = false) {
-  const element = document.getElementById("status");
-  if (!element) return;
-  element.textContent = text;
-  element.title = text;
-  element.classList.toggle("error", Boolean(isError));
-  element.dataset.state = isError ? "error" : /กำลัง/.test(text) ? "busy" : "ok";
+/**
+ * สร้าง state เริ่มต้น (ว่างเปล่า)
+ * @returns {AppState}
+ */
+export function createDefaultState() {
+  return {
+    accounts: [],
+    entries: [],
+    customers: [],
+    suppliers: [],
+    receivables: [],
+    payables: [],
+    autoDesc: [],
+    customerNames: [],
+    customerCosts: [],
+    incomingDocs: [],
+    importFiles: [],
+    settings: {
+      company: "",
+      taxId: "",
+      periodStart: "",
+      periodEnd: "",
+      currency: "THB",
+      note: "",
+      lockDate: "",     // วันที่ปิดงวด: รายการที่ลงวันที่ถึงวันนี้แก้ไขไม่ได้
+      vatRate: 7,
+      creditDays: 30,   // เครดิตเทอมเริ่มต้น (วัน) ใช้คำนวณวันครบกำหนดลูกหนี้/เจ้าหนี้
+      accountMap: {},   // บัญชีที่ผู้ใช้กำหนดเองสำหรับลงบัญชีอัตโนมัติ { role: accountId }
+    },
+  };
 }
+
+/**
+ * @typedef {ReturnType<typeof createDefaultState>} AppState
+ */
+
+/**
+ * ข้อมูลทั้งหมดที่โหลดมาแล้ว — ทุกหน้าอ่านจากตัวแปรนี้
+ * (ES module ส่ง live binding ดังนั้นเมื่อ replaceState() เปลี่ยนค่า ไฟล์อื่นจะเห็นค่าใหม่ทันที)
+ * @type {AppState}
+ */
+export let state = createDefaultState();
+
+/** ซิงก์กับเซิร์ฟเวอร์สำเร็จอย่างน้อยหนึ่งครั้งแล้วหรือยัง (ถ้ายัง จะไม่อนุญาตให้บันทึก) */
+let isSynced = false;
+/** จำนวนเอกสารย่อย (chunk) ปัจจุบันของแต่ละชุดข้อมูล ใช้ลบ chunk ที่เหลือเมื่อข้อมูลเล็กลง */
+const chunkCounts = Object.fromEntries(DATA_COLLECTIONS.map((collection) => [collection, 0]));
+/**
+ * สิ่งที่รู้ว่าอยู่บนเซิร์ฟเวอร์ตอนนี้ แยกตาม chunk — ใช้เขียนเฉพาะ chunk ที่เปลี่ยน
+ * null/ไม่มี = ไม่รู้ (บันทึกครั้งถัดไปจะเขียนทุก chunk)
+ * @type {Record<string, { isChunked: boolean, chunks: Array<{ ids: Set<string>, json: string }> } | null>}
+ */
+const serverChunks = {};
+/**
+ * ค่าล่าสุดที่ยืนยันแล้วว่าตรงกับบนเซิร์ฟเวอร์ (หลังโหลด/บันทึกสำเร็จ)
+ * ใช้คืนค่าเมื่อบันทึกไม่สำเร็จ — ถูกต้องแม้จะกดบันทึกหลายครั้งติดกันก่อนครั้งแรกเสร็จ
+ */
+const confirmedValues = {};
+/** จำค่าปัจจุบันใน state ของชุดข้อมูลเหล่านี้ว่าตรงกับเซิร์ฟเวอร์แล้ว */
+function rememberConfirmed(keys, source = state) {
+  keys.forEach((key) => {
+    if (key === META_KEY) {
+      confirmedValues.settings = source.settings;
+      confirmedValues.importFiles = source.importFiles;
+    } else {
+      confirmedValues[key] = source[key];
+    }
+  });
+}
+/** รหัสรุ่นของข้อมูลที่อยู่ใน state ตอนนี้ */
+const loadedRevisions = {};
+/** การซิงก์ที่กำลังทำอยู่ — saveData() จะรอให้เสร็จก่อน */
+let pendingSync = null;
+/**
+ * ชุดข้อมูลที่หน้านี้โหลดมาแล้ว — ใช้กันการบันทึกชุดที่ไม่ได้โหลด
+ * (ถ้าบันทึก state.entries ที่ยังว่างเพราะไม่ได้โหลด ข้อมูลจริงบนเซิร์ฟเวอร์จะถูกเขียนทับจนหาย)
+ */
+const loadedCollections = new Set();
 
 const asArray = (value) => (Array.isArray(value) ? value : []);
 
+/**
+ * ทำให้ข้อมูลอยู่ในรูปแบบที่ถูกต้องเสมอ (กันข้อมูลเก่าที่ขาดฟิลด์)
+ * @param {Partial<AppState>} data
+ * @returns {AppState}
+ */
 export function normalizeState(data) {
-  const defaults = defaultState().settings;
-  const settings = Object.assign({}, defaults, data.settings || {});
-  settings.accountMap = Object.assign({}, settings.accountMap || {});
+  const settings = { ...createDefaultState().settings, ...(data.settings || {}) };
+  settings.accountMap = { ...(settings.accountMap || {}) };
   return {
     accounts: asArray(data.accounts),
-    entries: asArray(data.entries).map((entry) => ({
-      ...entry,
-      lines: asArray(entry.lines),
-    })),
+    entries: asArray(data.entries).map((entry) => ({ ...entry, lines: asArray(entry.lines) })),
     customers: asArray(data.customers),
+    suppliers: asArray(data.suppliers),
     receivables: asArray(data.receivables),
     payables: asArray(data.payables),
     autoDesc: asArray(data.autoDesc),
@@ -125,612 +177,770 @@ export function normalizeState(data) {
   };
 }
 
+/**
+ * แทนที่ state ทั้งก้อน (ใช้ก่อนบันทึก และใช้คืนค่าเดิมเมื่อบันทึกไม่สำเร็จ)
+ * @param {Partial<AppState>} data
+ */
 export function replaceState(data) {
   state = normalizeState(data);
 }
 
-/* ---------- authentication ---------- */
-
-const USER_MARK = "accounting_user";
-const LOGIN_URL = new URL("../pages/login/login.html", import.meta.url).href;
-const isLoginPage = () => /\/pages\/login\//.test(location.pathname);
-
-function readMarker() {
-  try {
-    return localStorage.getItem(USER_MARK) || "";
-  } catch {
-    return "";
-  }
+/**
+ * แสดงสถานะการเชื่อมต่อที่มุมล่างของเมนู
+ * @param {string} text
+ * @param {boolean} [isError=false]
+ * @param {number | null} [percent=null] ความคืบหน้า 0-100 (แสดงเป็นแถบสีใต้ข้อความ) — null = ไม่แสดงแถบ
+ */
+export function setSyncStatus(text, isError = false, percent = null) {
+  const statusElement = document.getElementById("status");
+  if (!statusElement) return;
+  statusElement.textContent = text;
+  statusElement.title = text;
+  statusElement.classList.toggle("error", Boolean(isError));
+  // data-state ใช้กำหนดสีจุดสถานะใน CSS: busy = เหลือง, ok = เขียว, error = แดง
+  statusElement.dataset.state = isError ? "error" : /กำลัง/.test(text) ? "busy" : "ok";
+  if (isError) logAlert(text, { title: "การเชื่อมต่อ/บันทึกข้อมูล" });
+  if (percent == null) statusElement.style.removeProperty("--progress");
+  else statusElement.style.setProperty("--progress", `${percent}%`);
 }
 
-function writeMarker(value) {
-  try {
-    if (value) localStorage.setItem(USER_MARK, value);
-    else localStorage.removeItem(USER_MARK);
-  } catch {
-    /* storage blocked */
-  }
+/* ------------------------------------------------------------------ */
+/* ความคืบหน้า (%) ของการโหลด/บันทึก                                     */
+/* นับทุกคำขอที่ส่งไป Firestore ระหว่างงานหนึ่ง แล้วแสดง "เสร็จแล้วกี่ %"  */
+/* ------------------------------------------------------------------ */
+
+/** @type {{ label: string, total: number, done: number, expected: number, shownPercent: number } | null} */
+let activeProgress = null;
+
+/**
+ * เริ่มนับความคืบหน้า
+ * @param {string} label ข้อความหน้าตัวเลข % เช่น "กำลังบันทึก"
+ * @param {number} expected จำนวนคำขอที่คาดว่าจะส่งทั้งหมด (ประมาณการ เพื่อให้ % ขยับสม่ำเสมอ)
+ */
+function startProgress(label, expected) {
+  activeProgress = { label, total: 0, done: 0, expected, shownPercent: 0 };
+  renderProgress();
 }
 
-/** Resolves with the signed-in user (or null) once Firebase Auth has initialised. */
-export const authReady = new Promise((resolve) => {
-  const stop = onAuthStateChanged(auth, (user) => {
-    stop();
-    resolve(user);
+/** ปรับประมาณการ: จะมีคำขอเพิ่มอีก count รายการนับจากตอนนี้ */
+function expectMoreRequests(count) {
+  if (!activeProgress) return;
+  activeProgress.expected = activeProgress.total + count;
+  renderProgress();
+}
+
+function renderProgress() {
+  if (!activeProgress) return;
+  const { label, total, done, expected } = activeProgress;
+  // จำนวนคำขอเพิ่มขึ้นระหว่างทาง (เช่น เพิ่งรู้จำนวน chunk) จึงไม่ให้ตัวเลขถอยหลัง และค้างที่ 99% จนเสร็จจริง
+  const denominator = Math.max(total, expected);
+  const percent = denominator ? Math.min(99, Math.round((done / denominator) * 100)) : 0;
+  activeProgress.shownPercent = Math.max(activeProgress.shownPercent, percent);
+  setSyncStatus(`${label} ${activeProgress.shownPercent}%`, false, activeProgress.shownPercent);
+}
+
+/** จบงาน: ล้างตัวนับ (ข้อความสถานะถัดไปจะแทนที่ % เอง) */
+function finishProgress() {
+  activeProgress = null;
+}
+
+/** นับคำขอหนึ่งรายการ: เพิ่มยอดรวมตอนส่ง และเพิ่มยอดที่เสร็จตอนได้ผล */
+function trackRequest(request) {
+  const progress = activeProgress;
+  if (!progress) return request;
+  progress.total += 1;
+  renderProgress();
+  return request.finally(() => {
+    progress.done += 1;
+    if (activeProgress === progress) renderProgress();
   });
-});
-
-let redirecting = false;
-async function goLogin() {
-  if (redirecting || isLoginPage()) return;
-  redirecting = true;
-  writeMarker("");
-  await cacheClear();
-  const next = encodeURIComponent(location.pathname + location.search);
-  location.replace(`${LOGIN_URL}?next=${next}`);
 }
 
-function renderUser(user) {
-  const element = document.getElementById("user-email");
-  if (element) element.textContent = user ? user.email || "ผู้ใช้" : "";
+const getDoc = (...args) => trackRequest(firestoreGetDoc(...args));
+const setDoc = (...args) => trackRequest(firestoreSetDoc(...args));
+const deleteDoc = (...args) => trackRequest(firestoreDeleteDoc(...args));
+
+/** แสดงชื่อกิจการใต้โลโก้ในเมนูด้านข้าง */
+function showCompanyName() {
+  const companyElement = document.getElementById("brand-company");
+  if (companyElement && state.settings.company) companyElement.textContent = state.settings.company;
 }
 
-onAuthStateChanged(auth, (user) => {
-  renderUser(user);
-  if (!user) goLogin();
-});
+const isPermissionError = (error) =>
+  Boolean(error) && (error.code === "permission-denied" || /permission/i.test(error.message || ""));
 
-async function rememberUser(user) {
-  if (readMarker() !== user.uid) await cacheClear();
-  writeMarker(user.uid);
-}
+const createRevision = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-export async function signIn(email, password) {
-  const credential = await signInWithEmailAndPassword(auth, email, password);
-  await rememberUser(credential.user);
-  return credential.user;
-}
+/* ------------------------------------------------------------------ */
+/* การอ่าน/เขียนชุดข้อมูลแบบแบ่ง chunk                                   */
+/* ------------------------------------------------------------------ */
 
-export async function register(email, password) {
-  const credential = await createUserWithEmailAndPassword(auth, email, password);
-  await rememberUser(credential.user);
-  return credential.user;
-}
-
-export function resetPassword(email) {
-  return sendPasswordResetEmail(auth, email);
-}
-
-export async function logout() {
-  writeMarker("");
-  await cacheClear();
-  await signOut(auth);
-  location.replace(LOGIN_URL);
-}
-
-window.AppAuth = { logout };
-
-/* ---------- storage: chunked Firestore documents ---------- */
-
-function splitIntoChunks(records) {
+/**
+ * แบ่งรายการออกเป็นกลุ่ม ให้แต่ละกลุ่มมีขนาด JSON ไม่เกิน maxSize
+ * @param {unknown[]} records
+ * @param {number} [maxSize=MAX_CHUNK_SIZE]
+ * @returns {unknown[][]}
+ */
+function splitIntoChunks(records, maxSize = MAX_CHUNK_SIZE) {
   const chunks = [];
   let currentChunk = [];
-  let currentChunkSize = 2;
+  let currentSize = 2; // นับวงเล็บ [ ]
   for (const record of records) {
-    const serializedRecord = JSON.stringify(record);
-    const additionalSize = serializedRecord.length + (currentChunk.length ? 1 : 0);
-    if (currentChunk.length && currentChunkSize + additionalSize > CHUNK_SIZE) {
+    const recordSize = JSON.stringify(record).length;
+    const separatorSize = currentChunk.length ? 1 : 0;
+    if (currentChunk.length && currentSize + separatorSize + recordSize > maxSize) {
       chunks.push(currentChunk);
       currentChunk = [record];
-      currentChunkSize = 2 + serializedRecord.length;
+      currentSize = 2 + recordSize;
     } else {
       currentChunk.push(record);
-      currentChunkSize += additionalSize;
+      currentSize += separatorSize + recordSize;
     }
   }
   chunks.push(currentChunk);
-  return chunks.length ? chunks : [[]];
-}
-
-async function loadArray(collectionName) {
-  const collectionSnapshot = await getDoc(DATA_REFS[collectionName]);
-  if (!collectionSnapshot.exists()) return { items: [], chunks: 0, existed: false };
-  const collectionData = collectionSnapshot.data() || {};
-  if (Array.isArray(collectionData.items)) {
-    return { items: collectionData.items, chunks: 0, existed: true };
-  }
-
-  const chunkCount = Number(collectionData.chunks) || 0;
-  if (chunkCount > 0) {
-    const chunkSnapshots = await Promise.all(
-      Array.from({ length: chunkCount }, (_, chunkIndex) =>
-        getDoc(doc(db, "accounting", `${collectionName}_${chunkIndex}`)),
-      ),
-    );
-    const records = [];
-    chunkSnapshots.forEach((chunkSnapshot) => {
-      if (!chunkSnapshot.exists()) return;
-      const chunkData = chunkSnapshot.data() || {};
-      if (Array.isArray(chunkData.items)) records.push(...chunkData.items);
-    });
-    return { items: records, chunks: chunkCount, existed: true };
-  }
-  return { items: [], chunks: 0, existed: true };
-}
-
-async function saveArray(collectionName, records) {
-  const chunks = splitIntoChunks(records);
-  const previousChunkCount = chunkCounts[collectionName] || 0;
-  const operations = [];
-
-  if (chunks.length <= 1) {
-    operations.push(setDoc(DATA_REFS[collectionName], { items: chunks[0] || [] }));
-    for (let chunkIndex = 0; chunkIndex < previousChunkCount; chunkIndex += 1) {
-      operations.push(deleteDoc(doc(db, "accounting", `${collectionName}_${chunkIndex}`)));
-    }
-  } else {
-    operations.push(setDoc(DATA_REFS[collectionName], { chunks: chunks.length }));
-    chunks.forEach((chunkRecords, chunkIndex) => {
-      operations.push(setDoc(doc(db, "accounting", `${collectionName}_${chunkIndex}`), { items: chunkRecords }));
-    });
-    for (let chunkIndex = chunks.length; chunkIndex < previousChunkCount; chunkIndex += 1) {
-      operations.push(deleteDoc(doc(db, "accounting", `${collectionName}_${chunkIndex}`)));
-    }
-  }
-
-  await Promise.all(operations);
-  chunkCounts[collectionName] = chunks.length <= 1 ? 0 : chunks.length;
-}
-
-const newRev = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-
-function cacheCollection(key) {
-  return cacheSet(key, { items: state[key], chunks: chunkCounts[key] || 0, rev: revs[key] || "" });
-}
-
-function cacheMeta() {
-  return cacheSet("meta", { settings: state.settings, importFiles: state.importFiles, rev: revs.meta || "" });
-}
-
-function applyBrand() {
-  const brandCompany = document.getElementById("brand-company");
-  if (brandCompany && state.settings.company) brandCompany.textContent = state.settings.company;
-}
-
-function isPermissionError(error) {
-  return error && (error.code === "permission-denied" || /permission/i.test(error.message || ""));
+  return chunks;
 }
 
 /**
- * Bring the requested collections up to date with Firestore. Collections whose
- * cached revision matches the server are not downloaded again.
- * @param {string[]} keys
- * @param {Record<string, any>} cached  cache records already applied to state
- * @param {boolean} background  state was already rendered from cache
+ * ดาวน์โหลดชุดข้อมูลหนึ่งชุดจาก Firestore (รวม chunk ให้อัตโนมัติ)
+ * @param {string} collection
+ * @returns {Promise<{ items: unknown[], chunks: number, existed: boolean }>}
  */
-async function sync(keys, cached, background) {
+async function downloadCollection(collection) {
+  const snapshot = await getDoc(accountingDocument(collection));
+  if (!snapshot.exists()) return { items: [], chunks: 0, existed: false, chunkItems: [] };
+
+  const data = snapshot.data() || {};
+  if (Array.isArray(data.items)) return { items: data.items, chunks: 0, existed: true, chunkItems: [data.items] };
+
+  const chunkCount = Number(data.chunks) || 0;
+  const chunkSnapshots = await Promise.all(
+    Array.from({ length: chunkCount }, (_, chunkIndex) => getDoc(accountingDocument(`${collection}_${chunkIndex}`))),
+  );
+  const chunkItems = chunkSnapshots.map((chunkSnapshot) => {
+    const chunkData = chunkSnapshot.exists() ? chunkSnapshot.data() || {} : {};
+    return Array.isArray(chunkData.items) ? chunkData.items : [];
+  });
+  return { items: chunkItems.flat(), chunks: chunkCount, existed: true, chunkItems };
+}
+
+/**
+ * แบ่ง chunk โดยพยายามให้แต่ละรายการอยู่ใน chunk เดิมบนเซิร์ฟเวอร์
+ * → แก้ไข/เพิ่มรายการเดียว จะเปลี่ยนแค่ chunk เดียว (chunk อื่นไม่ต้องเขียนใหม่)
+ * - รายการใหม่ที่ต่อท้าย ใส่ใน chunk เล็ก (MAX_CHUNK_SIZE) → แต่ละครั้งส่งข้อมูลน้อย
+ * - chunk เดิมโตได้ถึง MAX_GROWN_CHUNK_SIZE โดยไม่ต้องแยก
+ * ลำดับของรายการยังเหมือนเดิมทุกประการ
+ * @param {unknown[]} records
+ * @param {{ chunks: Array<{ ids: Set<string> }> } | null} known
+ */
+function planChunks(records, known) {
+  if (!known || !known.chunks.length) return splitIntoChunks(records);
+  const previousIndexById = new Map();
+  known.chunks.forEach((chunk, chunkIndex) => chunk.ids.forEach((id) => previousIndexById.set(id, chunkIndex)));
+  const lastKnownIndex = known.chunks.length - 1;
+
+  const chunks = [];
+  let currentChunk = null;
+  let currentSize = 0;
+  let currentPreviousIndex = -1;
+  for (const record of records) {
+    const recordSize = JSON.stringify(record).length;
+    const previousIndex = record && record.id != null ? previousIndexById.get(String(record.id)) : undefined;
+    const isNewRecord = previousIndex === undefined;
+    const isExistingChunk = currentPreviousIndex >= 0 && chunks.length - 1 === currentPreviousIndex;
+    // รายการใหม่ต่อท้าย chunk สุดท้าย → ใช้ขนาด chunk เล็ก (chunk เดิมที่ใหญ่จะไม่ถูกเขียนใหม่ทุกครั้ง)
+    const isAppending = isNewRecord && currentPreviousIndex >= lastKnownIndex;
+    const sizeLimit = isExistingChunk && !isAppending ? MAX_GROWN_CHUNK_SIZE : MAX_CHUNK_SIZE;
+    let needsNewChunk = !currentChunk || (currentChunk.length > 0 && currentSize + 1 + recordSize > sizeLimit);
+    if (!isNewRecord && previousIndex > currentPreviousIndex) {
+      currentPreviousIndex = previousIndex;
+      if (chunks.length - 1 < previousIndex) {
+        // เว้น chunk ว่างไว้แทน chunk ที่รายการถูกลบหมด เพื่อให้ตำแหน่ง chunk ถัดไปไม่เลื่อน
+        while (chunks.length < previousIndex) chunks.push([]);
+        needsNewChunk = true;
+      }
+    }
+    if (needsNewChunk) {
+      currentChunk = [];
+      chunks.push(currentChunk);
+      currentSize = 2;
+    }
+    currentSize += (currentChunk.length ? 1 : 0) + recordSize;
+    currentChunk.push(record);
+  }
+  if (!chunks.length) chunks.push([]);
+  return chunks;
+}
+
+/**
+ * วางแผนการเขียนชุดข้อมูลหนึ่งชุด: เขียนเฉพาะ chunk ที่เปลี่ยน และลบ chunk ที่ไม่ใช้แล้ว
+ * @param {string} collection
+ * @param {unknown[]} records
+ * @returns {{ writes: Array<{ ref: object, data?: object, remove?: boolean, size: number }>,
+ *             onSuccess: () => void, onFailure: () => void }}
+ */
+function planCollectionWrites(collection, records) {
+  flushChunkSnapshot(collection);
+  const known = serverChunks[collection] || null;
+  const chunks = planChunks(records, known);
+  const chunkJsons = chunks.map((items) => JSON.stringify(items));
+  const isChunked = chunks.length > 1;
+  const previousChunkCount = chunkCounts[collection] || 0;
+  const writes = [];
+  const chunkDocument = (chunkIndex) => accountingDocument(`${collection}_${chunkIndex}`);
+  const writeDocument = (ref, data, size) => writes.push({ ref, data, size });
+  const removeDocument = (ref) => writes.push({ ref, remove: true, size: 0 });
+  /** chunk นี้บนเซิร์ฟเวอร์เหมือนเดิมทุกตัวอักษรหรือไม่ (เหมือน = ไม่ต้องเขียน) */
+  const isUnchanged = (chunkIndex) => Boolean(known && known.isChunked === isChunked
+    && known.chunks[chunkIndex] && known.chunks[chunkIndex].json === chunkJsons[chunkIndex]);
+
+  if (!isChunked) {
+    if (!isUnchanged(0)) writeDocument(accountingDocument(collection), { items: chunks[0] }, chunkJsons[0].length);
+    for (let chunkIndex = 0; chunkIndex < previousChunkCount; chunkIndex += 1) removeDocument(chunkDocument(chunkIndex));
+  } else {
+    const isSameLayout = known && known.isChunked && previousChunkCount === chunks.length;
+    if (!isSameLayout) writeDocument(accountingDocument(collection), { chunks: chunks.length }, 20);
+    chunks.forEach((items, chunkIndex) => {
+      if (!isUnchanged(chunkIndex)) writeDocument(chunkDocument(chunkIndex), { items }, chunkJsons[chunkIndex].length);
+    });
+    for (let chunkIndex = chunks.length; chunkIndex < previousChunkCount; chunkIndex += 1) removeDocument(chunkDocument(chunkIndex));
+  }
+
+  return {
+    writes,
+    onSuccess: () => {
+      chunkCounts[collection] = isChunked ? chunks.length : 0;
+      rememberServerChunks(collection, chunks, isChunked, chunkJsons);
+    },
+    // เขียนไม่สำเร็จ (อาจสำเร็จบางส่วน) → ไม่รู้แน่ว่าบนเซิร์ฟเวอร์เป็นอย่างไร ครั้งถัดไปให้เขียนทุก chunk
+    onFailure: () => { serverChunks[collection] = null; },
+  };
+}
+
+/**
+ * อัปโหลดชุดข้อมูลหนึ่งชุดโดยไม่เขียนรหัสรุ่น (ใช้ตอนย้ายข้อมูลจากโครงสร้างเก่า)
+ * @param {string} collection
+ * @param {unknown[]} records
+ */
+async function uploadCollection(collection, records) {
+  const plan = planCollectionWrites(collection, records);
+  try {
+    await Promise.all(plan.writes.map((write) => (write.remove ? deleteDoc(write.ref) : setDoc(write.ref, write.data))));
+  } catch (error) {
+    plan.onFailure();
+    throw error;
+  }
+  plan.onSuccess();
+}
+
+/**
+ * ส่งการเขียนทั้งหมดไปเซิร์ฟเวอร์
+ * - ข้อมูลไม่ใหญ่ (กรณีปกติ): รวมเป็น batch เดียว → ส่งครั้งเดียว และสำเร็จ/ล้มเหลวพร้อมกันทั้งหมด
+ * - ข้อมูลใหญ่มาก (เช่น เขียนใหม่ทั้งชุดครั้งแรก): เขียนข้อมูลพร้อมกันหลายคำขอ แล้วค่อยเขียนรหัสรุ่น
+ * @param {Array<{ ref: object, data?: object, remove?: boolean, size: number, merge?: boolean }>} writes
+ * @param {{ ref: object, data: object }} revisionWrite เขียนรหัสรุ่นใหม่ (ต้องเกิดหลัง/พร้อมข้อมูลเสมอ)
+ */
+async function commitWrites(writes, revisionWrite) {
+  const totalBytes = writes.reduce((total, write) => total + write.size, 0);
+  if (totalBytes <= MAX_BATCH_BYTES && writes.length + 1 <= MAX_BATCH_OPERATIONS) {
+    const batch = createWriteBatch();
+    writes.forEach((write) => {
+      if (write.remove) batch.delete(write.ref);
+      else batch.set(write.ref, write.data);
+    });
+    batch.set(revisionWrite.ref, revisionWrite.data, { merge: true });
+    await trackRequest(batch.commit());
+    return;
+  }
+  await Promise.all(writes.map((write) => (write.remove ? deleteDoc(write.ref) : setDoc(write.ref, write.data))));
+  await setDoc(revisionWrite.ref, revisionWrite.data, { merge: true });
+}
+
+/* ------------------------------------------------------------------ */
+/* แคชในเครื่อง                                                         */
+/* ------------------------------------------------------------------ */
+
+function cacheCollection(collection) {
+  const known = serverChunks[collection];
+  return writeCacheEntry(collection, {
+    items: state[collection],
+    chunks: chunkCounts[collection] || 0,
+    // จำนวนรายการในแต่ละ chunk บนเซิร์ฟเวอร์ (ใช้สร้างข้อมูล serverChunks จากแคชได้)
+    chunkLengths: known ? known.chunks.map((chunk) => chunk.length) : null,
+    revision: loadedRevisions[collection] || "",
+  });
+}
+
+/** สรุป chunk หนึ่ง: id ของรายการ + JSON ไว้เทียบว่าเปลี่ยนหรือไม่ */
+function describeChunk(items, json = JSON.stringify(items)) {
+  const ids = new Set();
+  items.forEach((item) => { if (item && item.id != null) ids.add(String(item.id)); });
+  return { ids, json, length: items.length };
+}
+
+/** จำว่าบนเซิร์ฟเวอร์มี chunk อะไรบ้าง */
+function rememberServerChunks(collection, chunkItems, isChunked, jsons = null) {
+  serverChunks[collection] = {
+    isChunked,
+    chunks: chunkItems.map((items, index) => describeChunk(items, jsons ? jsons[index] : undefined)),
+  };
+}
+
+/**
+ * สร้าง serverChunks จากแคช (แคชตรงกับเซิร์ฟเวอร์เพราะตรวจรหัสรุ่นแล้ว)
+ * ทำตอนเครื่องว่าง เพื่อไม่ให้หน้าเว็บโหลดช้าลง
+ */
+function rememberServerChunksFromCache(collection, cacheEntry) {
+  serverChunks[collection] = null;
+  const items = cacheEntry && cacheEntry.items;
+  if (!Array.isArray(items)) return;
+  const lengths = cacheEntry.chunkLengths;
+  const serverChunkCount = cacheEntry.chunks || 0;
+  const isChunked = serverChunkCount > 0;
+
+  const compute = () => {
+    if (serverChunks[collection] !== null) return; // มีข้อมูลที่ใหม่กว่าแล้ว (ดาวน์โหลด/บันทึก)
+    let slices = null;
+    if (Array.isArray(lengths) && lengths.reduce((total, length) => total + length, 0) === items.length) {
+      slices = [];
+      let offset = 0;
+      lengths.forEach((length) => {
+        slices.push(items.slice(offset, offset + length));
+        offset += length;
+      });
+    } else {
+      // แคชรุ่นเก่า (ไม่มี chunkLengths): เวอร์ชันก่อนหน้าแบ่ง chunk ด้วย splitIntoChunks เสมอ
+      // จึงแบ่งซ้ำแบบเดียวกันได้ — ใช้เมื่อจำนวน chunk ตรงกับที่บันทึกไว้เท่านั้น
+      const greedyChunks = splitIntoChunks(items, LEGACY_CHUNK_SIZE);
+      const greedyCount = greedyChunks.length === 1 ? 0 : greedyChunks.length;
+      if (greedyCount === serverChunkCount) slices = greedyChunks;
+    }
+    if (slices) rememberServerChunks(collection, slices, isChunked);
+  };
+  pendingChunkSnapshots.set(collection, compute);
+  // คำนวณตอนเครื่องว่าง เพื่อไม่ให้หน้าเว็บโหลดช้าลง (ถ้ากดบันทึกก่อน จะคำนวณทันทีใน planCollectionWrites)
+  const schedule = window.requestIdleCallback || ((callback) => setTimeout(callback, 200));
+  schedule(() => {
+    if (pendingChunkSnapshots.get(collection) === compute) {
+      pendingChunkSnapshots.delete(collection);
+      compute();
+    }
+  });
+}
+
+/** งานสร้าง serverChunks จากแคชที่ยังไม่ได้ทำ (บันทึกก่อนเครื่องว่าง → ทำทันที) */
+const pendingChunkSnapshots = new Map();
+function flushChunkSnapshot(collection) {
+  const compute = pendingChunkSnapshots.get(collection);
+  if (!compute) return;
+  pendingChunkSnapshots.delete(collection);
+  compute();
+}
+
+function cacheMeta() {
+  return writeCacheEntry(META_KEY, {
+    settings: state.settings,
+    importFiles: state.importFiles,
+    revision: loadedRevisions[META_KEY] || "",
+  });
+}
+
+/**
+ * ใส่ข้อมูลจากแคชลง state (ใช้ตอนเปิดหน้าแบบทันที)
+ * @param {string[]} collections
+ * @param {Record<string, any>} cacheEntries
+ */
+function applyCacheToState(collections, cacheEntries) {
+  collections.forEach((collection) => loadedCollections.add(collection));
+  collections.forEach((collection) => rememberServerChunksFromCache(collection, cacheEntries[collection]));
+  const data = { ...state, settings: cacheEntries.meta.settings, importFiles: cacheEntries.meta.importFiles };
+  collections.forEach((collection) => {
+    data[collection] = cacheEntries[collection].items;
+    chunkCounts[collection] = cacheEntries[collection].chunks || 0;
+    loadedRevisions[collection] = cacheEntries[collection].revision;
+  });
+  loadedRevisions[META_KEY] = cacheEntries.meta.revision;
+  state = normalizeState(data);
+  rememberConfirmed([...collections, META_KEY]);
+}
+
+/* ------------------------------------------------------------------ */
+/* การซิงก์กับ Firestore                                                */
+/* ------------------------------------------------------------------ */
+
+async function readRemoteRevisions() {
+  const snapshot = await getDoc(REVISIONS_DOCUMENT);
+  return { exists: snapshot.exists(), revisions: snapshot.exists() ? snapshot.data() || {} : {} };
+}
+
+/**
+ * ย้ายข้อมูลจากโครงสร้างเก่า (เอกสาร "main" เอกสารเดียว) ไปเป็นแบบแยกชุด ทำครั้งเดียว
+ */
+async function migrateLegacyMainDocument() {
+  const mainSnapshot = await getDoc(LEGACY_MAIN_DOCUMENT);
+  if (!mainSnapshot.exists()) return;
+  state = normalizeState(mainSnapshot.data() || {});
+  try {
+    await Promise.all([
+      ...DATA_COLLECTIONS.map((collection) => uploadCollection(collection, state[collection])),
+      setDoc(META_DOCUMENT, { importFiles: state.importFiles, settings: state.settings }),
+    ]);
+    notify("ย้ายข้อมูลไปยังโครงสร้างใหม่เรียบร้อย");
+  } catch (error) {
+    console.warn("ย้ายข้อมูลจากโครงสร้างเก่าไม่สำเร็จ", error);
+  }
+}
+
+/**
+ * ประทับรหัสรุ่นให้ชุดข้อมูลที่ยังไม่มี เพื่อให้ครั้งต่อไปข้ามการดาวน์โหลดได้
+ * @param {string[]} keys
+ * @param {Record<string, string>} remoteRevisions (ถูกแก้ไขในฟังก์ชันนี้)
+ */
+async function stampMissingRevisions(keys, remoteRevisions) {
+  const missing = {};
+  keys.forEach((key) => {
+    if (!remoteRevisions[key]) missing[key] = createRevision();
+  });
+  if (!Object.keys(missing).length) return;
+  try {
+    await setDoc(REVISIONS_DOCUMENT, missing, { merge: true });
+    Object.assign(remoteRevisions, missing);
+  } catch (error) {
+    console.warn("บันทึกรหัสรุ่นข้อมูลไม่สำเร็จ", error);
+  }
+}
+
+/**
+ * ทำให้ชุดข้อมูลที่ขอตรงกับ Firestore — ชุดที่รหัสรุ่นในแคชตรงกับเซิร์ฟเวอร์จะไม่ดาวน์โหลดซ้ำ
+ * @param {string[]} collections ชุดข้อมูลที่หน้านี้ต้องใช้
+ * @param {Record<string, any>} cacheEntries ข้อมูลในแคช (อาจไม่ครบ)
+ * @param {boolean} isBackground true = หน้าแสดงข้อมูลจากแคชไปแล้ว กำลังตรวจสอบเบื้องหลัง
+ * @returns {Promise<boolean>} พร้อมใช้งานหรือไม่
+ */
+async function syncWithServer(collections, cacheEntries, isBackground) {
   try {
     const user = await authReady;
     if (!user) {
-      goLogin();
+      redirectToLogin();
       return false;
     }
-    const revSnapshot = await getDoc(REVS_REF);
-    const remoteRevs = revSnapshot.exists() ? revSnapshot.data() || {} : {};
-    const stale = (key) => !cached[key] || !remoteRevs[key] || remoteRevs[key] !== cached[key].rev;
-    const fetchKeys = keys.filter(stale);
-    const fetchMeta = stale("meta");
 
-    const [results, metaSnapshot] = await Promise.all([
-      Promise.all(fetchKeys.map((key) => loadArray(key))),
-      fetchMeta ? getDoc(META_REF) : Promise.resolve(null),
+    const estimateDownload = (collection) => 1 + ((cacheEntries[collection] && cacheEntries[collection].chunks) || chunkCounts[collection] || 0);
+    const sum = (numbers) => numbers.reduce((total, number) => total + number, 0);
+    startProgress(isBackground ? "กำลังซิงก์ข้อมูล" : "กำลังโหลดข้อมูล", 2 + sum(collections.map(estimateDownload)));
+    const remote = await readRemoteRevisions();
+    const isStale = (key) => !cacheEntries[key] || !remote.revisions[key] || remote.revisions[key] !== cacheEntries[key].revision;
+    const staleCollections = collections.filter(isStale);
+    const isMetaStale = isStale(META_KEY);
+    // รู้แล้วว่าต้องดาวน์โหลดชุดไหนบ้าง จึงปรับประมาณการให้ตรงขึ้น
+    expectMoreRequests(sum(staleCollections.map(estimateDownload)) + (isMetaStale ? 1 : 0));
+
+    const [downloads, metaSnapshot] = await Promise.all([
+      Promise.all(staleCollections.map(downloadCollection)),
+      isMetaStale ? getDoc(META_DOCUMENT) : Promise.resolve(null),
     ]);
 
-    // Legacy single-document layout: migrate once to the split/chunked layout.
-    const nothingSplit = !revSnapshot.exists() && !results.some((result) => result.existed) && !(metaSnapshot && metaSnapshot.exists());
-    if (nothingSplit && !background) {
-      const mainSnapshot = await getDoc(DOC_MAIN);
-      if (mainSnapshot.exists()) {
-        state = normalizeState(mainSnapshot.data() || {});
-        try {
-          await Promise.all([
-            ...DATA_KEYS.map((key) => saveArray(key, state[key])),
-            setDoc(META_REF, { importFiles: state.importFiles, settings: state.settings }),
-          ]);
-          toast("ย้ายข้อมูลไปยังโครงสร้างใหม่เรียบร้อย", "info");
-        } catch (migrationError) {
-          console.warn("migration to split/chunked docs failed", migrationError);
-        }
-      }
-    }
+    const isEmptyDatabase = !remote.exists
+      && !downloads.some((download) => download.existed)
+      && !(metaSnapshot && metaSnapshot.exists());
+    if (isEmptyDatabase && !isBackground) await migrateLegacyMainDocument();
 
-    const changed = [];
-    const data = { ...state };
-    fetchKeys.forEach((key, index) => {
-      data[key] = results[index].items;
-      chunkCounts[key] = results[index].chunks;
-      changed.push(key);
+    // รวมข้อมูลที่ดาวน์โหลดใหม่กับข้อมูลในแคชที่ยังใช้ได้
+    const nextData = { ...state };
+    const changedKeys = [];
+    staleCollections.forEach((collection, index) => {
+      nextData[collection] = downloads[index].items;
+      chunkCounts[collection] = downloads[index].chunks;
+      rememberServerChunks(collection, downloads[index].chunkItems, downloads[index].chunks > 0);
+      changedKeys.push(collection);
     });
-    // Collections whose cached copy is still current come from the cache.
-    let fromCache = false;
-    keys.forEach((key) => {
-      if (fetchKeys.includes(key) || !cached[key]) return;
-      chunkCounts[key] = cached[key].chunks || 0;
-      if (!background) {
-        data[key] = cached[key].items;
-        fromCache = true;
+
+    let usedCache = false;
+    collections.forEach((collection) => {
+      if (staleCollections.includes(collection) || !cacheEntries[collection]) return;
+      chunkCounts[collection] = cacheEntries[collection].chunks || 0;
+      if (!serverChunks[collection]) rememberServerChunksFromCache(collection, cacheEntries[collection]);
+      if (!isBackground) {
+        nextData[collection] = cacheEntries[collection].items;
+        usedCache = true;
       }
     });
-    if (fetchMeta && metaSnapshot) {
+
+    if (isMetaStale && metaSnapshot) {
       const meta = metaSnapshot.exists() ? metaSnapshot.data() || {} : {};
-      if (Object.prototype.hasOwnProperty.call(meta, "importFiles")) data.importFiles = meta.importFiles;
-      if (Object.prototype.hasOwnProperty.call(meta, "settings")) data.settings = meta.settings;
-      changed.push("meta");
-    } else if (!background && cached.meta) {
-      data.importFiles = cached.meta.importFiles;
-      data.settings = cached.meta.settings;
-      fromCache = true;
+      if ("importFiles" in meta) nextData.importFiles = meta.importFiles;
+      if ("settings" in meta) nextData.settings = meta.settings;
+      changedKeys.push(META_KEY);
+    } else if (!isBackground && cacheEntries.meta) {
+      nextData.importFiles = cacheEntries.meta.importFiles;
+      nextData.settings = cacheEntries.meta.settings;
+      usedCache = true;
     }
-    if (changed.length || fromCache) state = normalizeState(data);
+    if (changedKeys.length || usedCache) state = normalizeState(nextData);
+    rememberConfirmed(isBackground ? changedKeys : [...collections, META_KEY]);
 
-    // Make sure every store has a revision so later visits can skip downloads.
-    const missingRevs = {};
-    [...keys, "meta"].forEach((key) => {
-      if (!remoteRevs[key]) missingRevs[key] = newRev();
-    });
-    if (Object.keys(missingRevs).length) {
-      try {
-        await setDoc(REVS_REF, missingRevs, { merge: true });
-        Object.assign(remoteRevs, missingRevs);
-      } catch (error) {
-        console.warn("cannot stamp revisions", error);
-      }
-    }
-    keys.forEach((key) => { revs[key] = remoteRevs[key] || ""; });
-    revs.meta = remoteRevs.meta || "";
+    await stampMissingRevisions([...collections, META_KEY], remote.revisions);
+    [...collections, META_KEY].forEach((key) => { loadedRevisions[key] = remote.revisions[key] || ""; });
+    await Promise.all([...collections.map(cacheCollection), cacheMeta()]);
 
-    await Promise.all([...keys.map(cacheCollection), cacheMeta()]);
-    ready = true;
-    applyBrand();
-    setStatus("ซิงก์ข้อมูลแล้ว");
+    collections.forEach((collection) => loadedCollections.add(collection));
+    isSynced = true;
+    finishProgress();
+    showCompanyName();
+    setSyncStatus("ซิงก์ข้อมูลแล้ว");
 
-    const realChanges = background ? changed.filter((key) => cached[key]) : [];
-    if (realChanges.length) {
-      window.dispatchEvent(new CustomEvent("app-data-refresh", { detail: { keys: realChanges } }));
-      toast("อัปเดตข้อมูลล่าสุดจากเซิร์ฟเวอร์แล้ว");
+    // แจ้งหน้าเว็บให้วาดใหม่ เฉพาะกรณีที่หน้าแสดงข้อมูลจากแคชไปแล้วและข้อมูลเปลี่ยนจริง
+    const refreshedKeys = isBackground ? changedKeys.filter((key) => cacheEntries[key]) : [];
+    if (refreshedKeys.length) {
+      window.dispatchEvent(new CustomEvent(DATA_REFRESH_EVENT, { detail: { keys: refreshedKeys } }));
+      notify("อัปเดตข้อมูลล่าสุดจากเซิร์ฟเวอร์แล้ว");
     }
     return true;
   } catch (error) {
     console.error(error);
+    finishProgress();
     if (isPermissionError(error)) {
-      setStatus("ไม่มีสิทธิ์เข้าถึงข้อมูล", true);
-      toastError("บัญชีผู้ใช้นี้ไม่มีสิทธิ์เข้าถึงข้อมูล");
+      setSyncStatus("ไม่มีสิทธิ์เข้าถึงข้อมูล", true);
+      notifyError("บัญชีผู้ใช้นี้ไม่มีสิทธิ์เข้าถึงข้อมูล");
       return false;
     }
-    setStatus(background ? "ออฟไลน์ · แสดงข้อมูลที่บันทึกไว้ในเครื่อง" : `เชื่อมต่อ Firebase ไม่สำเร็จ: ${error.message || error}`, true);
-    if (!background) toastError("เชื่อมต่อ Firebase ไม่สำเร็จ");
-    return background;
+    if (isBackground) {
+      // ออฟไลน์: ยังดูข้อมูลจากแคชได้ แต่บันทึกไม่ได้จนกว่าจะเชื่อมต่อสำเร็จ
+      setSyncStatus("ออฟไลน์ · แสดงข้อมูลที่บันทึกไว้ในเครื่อง", true);
+      return true;
+    }
+    setSyncStatus(`เชื่อมต่อ Firebase ไม่สำเร็จ: ${error.message || error}`, true);
+    notifyError("เชื่อมต่อ Firebase ไม่สำเร็จ");
+    return false;
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* API สำหรับหน้าเว็บ                                                   */
+/* ------------------------------------------------------------------ */
+
 /**
- * Load collections for the current page. When a local copy exists the page
- * renders from it immediately and Firestore is checked in the background;
- * pages subscribe with onDataRefresh() to re-render if newer data arrives.
+ * โหลดชุดข้อมูลที่หน้าต้องใช้
+ * @param {string[]} [collections=DATA_COLLECTIONS] เช่น ["accounts", "entries"]
+ * @returns {Promise<boolean>} true เมื่อ state พร้อมแสดงผล
+ *
+ * @example
+ * if (await loadData(["accounts", "entries"])) renderPage();
  */
-export async function load(collectionNames = DATA_KEYS) {
-  const keys = [...new Set(collectionNames)];
-  const unknown = keys.filter((key) => !DATA_KEYS.includes(key));
+export async function loadData(collections = DATA_COLLECTIONS) {
+  const requested = [...new Set(collections)];
+  const unknown = requested.filter((collection) => !DATA_COLLECTIONS.includes(collection));
   if (unknown.length) throw new Error(`ไม่รู้จักชุดข้อมูล: ${unknown.join(", ")}`);
 
-  if (!readMarker()) {
+  // ยังไม่เคยล็อกอินบนเครื่องนี้: ต้องรอ Firebase ยืนยันตัวตนก่อน
+  if (!getRememberedUserId()) {
     const user = await authReady;
     if (!user) {
-      goLogin();
+      redirectToLogin();
       return false;
     }
     await rememberUser(user);
   }
 
-  const cached = await cacheGetMany([...keys, "meta"]);
-  const complete = cached.meta && keys.every((key) => cached[key]);
-  if (complete) {
-    const data = { ...state, settings: cached.meta.settings, importFiles: cached.meta.importFiles };
-    keys.forEach((key) => {
-      data[key] = cached[key].items;
-      chunkCounts[key] = cached[key].chunks || 0;
-      revs[key] = cached[key].rev;
-    });
-    revs.meta = cached.meta.rev;
-    state = normalizeState(data);
-    applyBrand();
-    setStatus("กำลังซิงก์ข้อมูล...");
-    syncPromise = sync(keys, cached, true);
+  const cacheEntries = await readCacheEntries([...requested, META_KEY]);
+  const isCacheComplete = Boolean(cacheEntries.meta) && requested.every((collection) => cacheEntries[collection]);
+
+  if (isCacheComplete) {
+    applyCacheToState(requested, cacheEntries);
+    showCompanyName();
+    setSyncStatus("กำลังซิงก์ข้อมูล 0%", false, 0);
+    pendingSync = syncWithServer(requested, cacheEntries, true);
     return true;
   }
 
-  setStatus("กำลังโหลดข้อมูลจาก Firebase...");
-  syncPromise = sync(keys, cached, false);
-  return syncPromise;
-}
-
-/** Re-render hook for when background sync delivers newer data. */
-export function onDataRefresh(callback) {
-  window.addEventListener("app-data-refresh", (event) => callback(event.detail.keys));
-}
-
-const KEY_TO_STORE = {
-  accounts: "accounts",
-  entries: "entries",
-  customers: "customers",
-  receivables: "receivables",
-  payables: "payables",
-  autoDesc: "autoDesc",
-  customerNames: "customerNames",
-  customerCosts: "customerCosts",
-  incomingDocs: "incomingDocs",
-  importFiles: "meta",
-  settings: "meta",
-};
-
-export async function save(dataKeys) {
-  if (syncPromise) await syncPromise;
-  if (!ready) {
-    toastError("ยังเชื่อมต่อข้อมูลไม่สำเร็จ บันทึกไม่ได้");
-    return false;
-  }
-  const targets = [...new Set(
-    (dataKeys && dataKeys.length ? dataKeys : [...DATA_KEYS, "meta"]).map((dataKey) => KEY_TO_STORE[dataKey] || dataKey),
-  )];
-  try {
-    setStatus("กำลังบันทึก...");
-    // Refuse to overwrite data another device changed after we loaded it.
-    const revSnapshot = await getDoc(REVS_REF);
-    const remoteRevs = revSnapshot.exists() ? revSnapshot.data() || {} : {};
-    const conflicts = targets.filter((target) => remoteRevs[target] && revs[target] && remoteRevs[target] !== revs[target]);
-    if (conflicts.length) {
-      setStatus("มีข้อมูลใหม่จากเครื่องอื่น");
-      toastError("ข้อมูลถูกแก้ไขจากเครื่องอื่น ระบบกำลังโหลดข้อมูลล่าสุด กรุณาทำรายการอีกครั้ง");
-      const conflictKeys = conflicts.filter((target) => target !== "meta");
-      const cachedNow = await cacheGetMany([...conflictKeys, "meta"]);
-      conflicts.forEach((target) => { if (cachedNow[target]) cachedNow[target].rev = "stale"; });
-      // Run after the caller restores its previous state, then apply server data.
-      window.setTimeout(() => { syncPromise = sync(conflictKeys, cachedNow, true); }, 0);
-      return false;
-    }
-
-    const operations = [];
-    targets.forEach((target) => {
-      if (DATA_KEYS.includes(target)) operations.push(saveArray(target, state[target]));
-    });
-    if (targets.includes("meta")) {
-      operations.push(setDoc(META_REF, { importFiles: state.importFiles, settings: state.settings }));
-    }
-    await Promise.all(operations);
-
-    const stamped = Object.fromEntries(targets.map((target) => [target, newRev()]));
-    await setDoc(REVS_REF, stamped, { merge: true });
-    Object.assign(revs, stamped);
-    await Promise.all(targets.map((target) => (target === "meta" ? cacheMeta() : cacheCollection(target))));
-    applyBrand();
-    setStatus("บันทึกแล้ว");
-    return true;
-  } catch (error) {
-    console.error(error);
-    setStatus(`บันทึกไม่สำเร็จ: ${error.message || error}`, true);
-    toastError(isPermissionError(error) ? "ไม่มีสิทธิ์บันทึกข้อมูล" : `บันทึกข้อมูลไม่สำเร็จ: ${error.message || error}`);
-    return false;
-  }
-}
-
-/* ---------- period lock ---------- */
-
-/** Entries dated on or before settings.lockDate belong to a closed period. */
-export function isLocked(date) {
-  const lock = state.settings.lockDate;
-  const iso = toIsoDate(date);
-  return Boolean(lock && iso && iso <= lock);
-}
-
-export function lockMessage() {
-  return `งวดบัญชีถึงวันที่ ${fmtDateDMY(state.settings.lockDate)} ถูกปิดแล้ว แก้ไขหรือเพิ่มรายการในช่วงนี้ไม่ได้ (ปลดล็อกได้ที่หน้าการตั้งค่า)`;
-}
-
-/* ---------- default accounts used for automatic postings ---------- */
-
-export const ACCOUNT_ROLES = {
-  cash: { label: "เงินสด / เงินฝาก (รับ-จ่ายเงิน)", type: "asset", codes: ["1101", "1102"], names: ["เงินสด", "เงินฝาก"] },
-  receivable: { label: "ลูกหนี้การค้า", type: "asset", codes: ["1103"], names: ["ลูกหนี้"] },
-  payable: { label: "เจ้าหนี้การค้า", type: "liability", codes: ["2101"], names: ["เจ้าหนี้"] },
-  revenue: { label: "รายได้ (ค่าเริ่มต้นเมื่อตั้งลูกหนี้)", type: "revenue", codes: ["4101"], names: ["รายได้"] },
-  expense: { label: "ค่าใช้จ่าย/ซื้อ (ค่าเริ่มต้นเมื่อตั้งเจ้าหนี้)", type: "expense", codes: ["5101", "5206"], names: ["ต้นทุน", "ค่าใช้จ่าย"] },
-  vatOutput: { label: "ภาษีขาย", type: "liability", codes: ["2103"], names: ["ภาษีขาย"] },
-  vatInput: { label: "ภาษีซื้อ", type: "asset", codes: ["1107"], names: ["ภาษีซื้อ"] },
-  retained: { label: "กำไรสะสม (ใช้ตอนปิดบัญชี)", type: "equity", codes: ["3201"], names: ["กำไรสะสม"] },
-};
-
-/** Account configured for a posting role, falling back to the standard chart codes/names. */
-export function roleAccount(role) {
-  const config = ACCOUNT_ROLES[role];
-  const mapped = state.settings.accountMap && state.settings.accountMap[role];
-  if (mapped) {
-    const account = state.accounts.find((item) => item.id === mapped);
-    if (account) return account;
-  }
-  if (!config) return null;
-  for (const code of config.codes) {
-    const account = state.accounts.find((item) => String(item.code) === code && item.type === config.type);
-    if (account) return account;
-  }
-  for (const name of config.names) {
-    const account = state.accounts.find((item) => item.type === config.type && String(item.name || "").includes(name));
-    if (account) return account;
-  }
-  return null;
-}
-
-export function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-}
-
-export function fmt(n) {
-  return Number(n || 0).toLocaleString("th-TH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
-export function fmtInt(n) {
-  return Number(n || 0).toLocaleString("th-TH");
-}
-
-export function esc(value) {
-  return String(value == null ? "" : value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-export function fmtDateDMY(value) {
-  if (value == null || value === "") return "";
-  if (typeof value === "number" && typeof XLSX !== "undefined" && XLSX.SSF) {
-    const parsed = XLSX.SSF.parse_date_code(value);
-    if (parsed) {
-      return [parsed.d, parsed.m, parsed.y]
-        .map((part) => String(part).padStart(2, "0"))
-        .join("/");
-    }
-  }
-  const text = String(value).trim();
-  const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (iso) return `${iso[3].padStart(2, "0")}/${iso[2].padStart(2, "0")}/${iso[1]}`;
-  const dmy = text.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})/);
-  if (dmy) return `${dmy[1].padStart(2, "0")}/${dmy[2].padStart(2, "0")}/${dmy[3]}`;
-  return text;
-}
-
-export function getAccount(id) {
-  return state.accounts.find((account) => account.id === id);
-}
-
-export function getCustomer(id) {
-  return state.customers.find((customer) => customer.id === id);
-}
-
-export function customerLabel(customer) {
-  if (!customer) return "";
-  return `${customer.code ? `${customer.code} - ` : ""}${customer.name || ""}`.trim();
-}
-
-export function accountBalance(account) {
-  let debit = 0;
-  let credit = 0;
-  state.entries.forEach((entry) => {
-    entry.lines.forEach((line) => {
-      if (line.accountId !== account.id) return;
-      debit += Number(line.debit) || 0;
-      credit += Number(line.credit) || 0;
-    });
-  });
-  const net = normalDebit(account.type) ? debit - credit : credit - debit;
-  return { debit, credit, net };
-}
-
-export function entryTotal(entry) {
-  return entry.lines.reduce((total, line) => total + (Number(line.debit) || 0), 0);
-}
-
-export function balanceColumns(account, net) {
-  const debitSide = normalDebit(account.type) ? net : -net;
-  return {
-    debit: debitSide > AMOUNT_EPSILON ? debitSide : 0,
-    credit: debitSide < -AMOUNT_EPSILON ? -debitSide : 0,
-  };
-}
-
-/* ---------- accounting helpers shared by the redesigned pages ---------- */
-
-export const TYPE_ORDER = ["asset", "liability", "equity", "revenue", "expense"];
-
-/** Kinds of journal entry. Adjusting entries feed the worksheet's adjustment
- *  columns; closing entries are excluded from the income statement. */
-export const ENTRY_KINDS = {
-  general: "ทั่วไป",
-  adjusting: "ปรับปรุง",
-  closing: "ปิดบัญชี",
-};
-
-export function entryKind(entry) {
-  return entry && ENTRY_KINDS[entry.kind] ? entry.kind : "general";
-}
-
-export function compareAccounts(left, right) {
-  const leftType = TYPE_ORDER.indexOf(left.type);
-  const rightType = TYPE_ORDER.indexOf(right.type);
-  const typeDiff = (leftType < 0 ? 99 : leftType) - (rightType < 0 ? 99 : rightType);
-  if (typeDiff) return typeDiff;
-  return String(left.code || "").localeCompare(String(right.code || ""), "th-TH", { numeric: true });
-}
-
-export function sortedAccounts() {
-  return state.accounts.slice().sort(compareAccounts);
-}
-
-export function accountLabel(account) {
-  if (!account) return "(บัญชีถูกลบ)";
-  return `${account.code || ""} ${account.name || ""}`.trim();
-}
-
-/** <option> list grouped by account type (optgroup), for any account picker. */
-export function accountOptionsHtml(selectedId = "", placeholder = "-- เลือกบัญชี --") {
-  const accounts = sortedAccounts();
-  const groups = TYPE_ORDER.map((type) => ({ type, items: accounts.filter((account) => account.type === type) }));
-  const others = accounts.filter((account) => !TYPE_ORDER.includes(account.type));
-  if (others.length) groups.push({ type: "other", items: others });
-  return `<option value="">${esc(placeholder)}</option>` + groups
-    .filter((group) => group.items.length)
-    .map((group) => `<optgroup label="${esc(TYPES[group.type] || "อื่น ๆ")}">${group.items
-      .map((account) => `<option value="${esc(account.id)}"${account.id === selectedId ? " selected" : ""}>${esc(account.code)} · ${esc(account.name)}</option>`)
-      .join("")}</optgroup>`)
-    .join("");
-}
-
-/** Accounting style: negatives in parentheses, zero as a dash. */
-export function fmtAcc(n) {
-  const value = Number(n || 0);
-  if (Math.abs(value) < AMOUNT_EPSILON) return "-";
-  return value < 0 ? `(${fmt(-value)})` : fmt(value);
-}
-
-/** Next journal voucher number for the month of `isoDate`: JV-YYYYMM-0001. */
-export function nextDocNo(isoDate, ignoreEntryId = "") {
-  return nextSeqNo(state.entries, "JV", isoDate, ignoreEntryId);
+  setSyncStatus("กำลังโหลดข้อมูล 0%", false, 0);
+  pendingSync = syncWithServer(requested, cacheEntries, false);
+  return pendingSync;
 }
 
 /**
- * Next running number PREFIX-YYYYMM-0001 for the month of `date`, unique within `records`.
- * Pass `reserved` (a Set) when numbering many new records in one go (imports).
+ * ลงทะเบียนฟังก์ชันวาดหน้าใหม่ เมื่อการซิงก์เบื้องหลังได้ข้อมูลที่ใหม่กว่า
+ * @param {(changedKeys: string[]) => void} callback
  */
-export function nextSeqNo(records, code, date, ignoreId = "", reserved = null) {
-  const iso = toIsoDate(date) || new Date().toISOString().slice(0, 10);
-  const prefix = `${code}-${iso.slice(0, 7).replace("-", "")}-`;
-  let max = 0;
-  const consider = (docNo) => {
-    if (!docNo || !String(docNo).startsWith(prefix)) return;
-    const seq = parseInt(String(docNo).slice(prefix.length), 10);
-    if (seq > max) max = seq;
-  };
-  records.forEach((record) => {
-    if (record.id !== ignoreId) consider(record.docNo);
-  });
-  if (reserved) reserved.forEach(consider);
-  const docNo = `${prefix}${String(max + 1).padStart(4, "0")}`;
-  if (reserved) reserved.add(docNo);
-  return docNo;
+export function onDataRefresh(callback) {
+  window.addEventListener(DATA_REFRESH_EVENT, (event) => callback(event.detail.keys));
 }
 
-export function typeBadge(type) {
-  return `<span class="badge type-${esc(type)}">${esc(TYPES[type] || type || "อื่น ๆ")}</span>`;
+/**
+ * บันทึกจริงหนึ่งครั้ง (เรียกผ่านคิวใน saveData เท่านั้น)
+ * - ปฏิเสธการบันทึก ถ้าเครื่องอื่นแก้ชุดข้อมูลเดียวกันหลังจากที่เราโหลดมา แล้วโหลดข้อมูลล่าสุดมาแทน
+ * @param {string[]} [keys]
+ * @returns {Promise<boolean>}
+ */
+async function performSave(keys) {
+  if (pendingSync) await pendingSync;
+  if (!isSynced) {
+    notifyError("ยังเชื่อมต่อข้อมูลไม่สำเร็จ บันทึกไม่ได้");
+    return false;
+  }
+
+  // settings และ importFiles เก็บรวมกันในเอกสาร "meta"
+  const toStorageKey = (key) => (key === "settings" || key === "importFiles" ? META_KEY : key);
+  const targets = [...new Set((keys && keys.length ? keys : [...DATA_COLLECTIONS, META_KEY]).map(toStorageKey))];
+
+  // ป้องกันข้อมูลหาย: ห้ามบันทึกชุดข้อมูลที่หน้านี้ไม่ได้โหลด (ยกเว้นการบันทึกทั้งหมด เช่น กู้คืนไฟล์สำรอง)
+  const isFullReplace = !(keys && keys.length);
+  const notLoaded = targets.filter((key) => DATA_COLLECTIONS.includes(key) && !loadedCollections.has(key));
+  if (!isFullReplace && notLoaded.length) {
+    console.error("saveData: collections were not loaded on this page", notLoaded);
+    notifyError(`ระบบป้องกันการบันทึก: หน้านี้ไม่ได้โหลดข้อมูล ${notLoaded.join(", ")} (ข้อมูลจริงไม่ถูกแก้ไข)`);
+    return false;
+  }
+
+  try {
+    const savedCollections = targets.filter((key) => DATA_COLLECTIONS.includes(key));
+    // คำขอ: อ่านรหัสรุ่น 1 + เขียน (ปกติรวมเป็น batch เดียว) — ปรับตัวเลขจริงหลังวางแผนการเขียน
+    startProgress("กำลังบันทึก", 2);
+    const remote = await readRemoteRevisions();
+    const conflictingKeys = targets.filter(
+      (key) => remote.revisions[key] && loadedRevisions[key] && remote.revisions[key] !== loadedRevisions[key],
+    );
+    if (conflictingKeys.length) {
+      await handleSaveConflict(conflictingKeys);
+      return false;
+    }
+
+    // ค่าที่กำลังจะบันทึก (state อาจเปลี่ยนต่อระหว่างรอเซิร์ฟเวอร์ ถ้าผู้ใช้บันทึกรายการถัดไป)
+    const savedSnapshot = state;
+    const plans = savedCollections.map((collection) => planCollectionWrites(collection, savedSnapshot[collection]));
+    const writes = plans.flatMap((plan) => plan.writes);
+    if (targets.includes(META_KEY)) {
+      const metaData = { importFiles: savedSnapshot.importFiles, settings: savedSnapshot.settings };
+      writes.push({ ref: META_DOCUMENT, data: metaData, size: JSON.stringify(metaData).length });
+    }
+    // ตอนนี้รู้จำนวนคำขอจริงแล้ว: batch = 1 คำขอ
+    expectMoreRequests(1);
+    const newRevisions = Object.fromEntries(targets.map((key) => [key, createRevision()]));
+    try {
+      await commitWrites(writes, { ref: REVISIONS_DOCUMENT, data: newRevisions });
+    } catch (error) {
+      plans.forEach((plan) => plan.onFailure());
+      throw error;
+    }
+    plans.forEach((plan) => plan.onSuccess());
+    Object.assign(loadedRevisions, newRevisions);
+    rememberConfirmed(targets, savedSnapshot);
+    // เขียนแคชในเครื่องเบื้องหลัง ไม่ต้องรอ (ข้อมูลบนเซิร์ฟเวอร์บันทึกเสร็จแล้ว)
+    targets.forEach((key) => (key === META_KEY ? cacheMeta() : cacheCollection(key)));
+
+    finishProgress();
+    showCompanyName();
+    setSyncStatus("บันทึกแล้ว");
+    return true;
+  } catch (error) {
+    console.error(error);
+    finishProgress();
+    setSyncStatus(`บันทึกไม่สำเร็จ: ${error.message || error}`, true);
+    notifyError(isPermissionError(error) ? "ไม่มีสิทธิ์บันทึกข้อมูล" : `บันทึกข้อมูลไม่สำเร็จ: ${error.message || error}`);
+    return false;
+  }
+}
+
+/** การบันทึกที่กำลังส่งไปเซิร์ฟเวอร์ */
+let activeSave = null;
+/** การบันทึกที่รอคิว (รวมทุกคำขอที่เข้ามาระหว่างรอเป็นครั้งเดียว) */
+let queuedSave = null;
+
+function startSave(keys) {
+  const run = performSave(keys).finally(() => {
+    if (activeSave === run) activeSave = null;
+  });
+  activeSave = run;
+  return run;
+}
+
+/**
+ * บันทึกชุดข้อมูลที่แก้ไขลง Firestore
+ * - ทำทีละครั้งตามลำดับ: ถ้ากดบันทึกระหว่างที่ครั้งก่อนยังไม่เสร็จ จะรวมเป็นการบันทึกครั้งถัดไปครั้งเดียว
+ *   (ใช้ state ล่าสุด จึงไม่มีการเขียนทับกันเอง)
+ * - ถ้าครั้งก่อนล้มเหลวแต่มีครั้งถัดไปในคิว ครั้งถัดไปจะส่งข้อมูลทั้งหมดอีกรอบ (ลองใหม่ให้อัตโนมัติ)
+ * - ปฏิเสธการบันทึก ถ้าเครื่องอื่นแก้ชุดข้อมูลเดียวกันหลังจากที่เราโหลดมา (กันการเขียนทับ)
+ * @param {string[]} [keys] ชุดข้อมูลที่ต้องการบันทึก เช่น ["entries"], ["settings"]
+ *                         ไม่ระบุ = บันทึกทั้งหมด (ใช้ตอนนำเข้า/กู้คืน)
+ * @returns {Promise<boolean>} true เมื่อบันทึกสำเร็จ
+ */
+export function saveData(keys) {
+  if (!activeSave) {
+    const run = startSave(keys);
+    // ล้มเหลว แต่ระหว่างนั้นมีการบันทึกเข้าคิว (ซึ่งรวมข้อมูลนี้อยู่แล้ว) → ใช้ผลของครั้งถัดไป
+    return run.then((isSaved) => (isSaved || !queuedSave ? isSaved : queuedSave.promise));
+  }
+  if (!queuedSave) {
+    const queued = { keys: new Set(), isFull: false };
+    queued.promise = activeSave.catch(() => false).then(() => {
+      queuedSave = null;
+      return startSave(queued.isFull ? undefined : [...queued.keys]);
+    });
+    queuedSave = queued;
+  }
+  if (keys && keys.length) keys.forEach((key) => queuedSave.keys.add(key));
+  else queuedSave.isFull = true;
+  return queuedSave.promise;
+}
+
+/** กำลังบันทึกอยู่หรือมีคิวรอ (ใช้เตือนก่อนปิดหน้า) */
+export function hasPendingSave() {
+  return Boolean(activeSave || queuedSave);
+}
+
+// ปิด/เปลี่ยนหน้าระหว่างที่ยังส่งข้อมูลไม่เสร็จ → ให้เบราว์เซอร์ถามยืนยันก่อน
+window.addEventListener("beforeunload", (event) => {
+  if (!hasPendingSave()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
+/**
+ * แก้ไข state แล้วบันทึกทันที ถ้าบันทึกไม่สำเร็จจะคืนค่า state เดิมให้อัตโนมัติ
+ * ใช้แทนรูปแบบ "สำรอง state → replaceState → saveData → คืนค่าเมื่อผิดพลาด" ที่ต้องเขียนซ้ำทุกหน้า
+ *
+ * @param {Partial<AppState>} changes ฟิลด์ที่เปลี่ยน เช่น { entries: newEntries }
+ * @param {string[]} [keysToSave] ชุดข้อมูลที่ต้องบันทึก (ค่าเริ่มต้น = คีย์ทั้งหมดใน changes)
+ * @returns {Promise<boolean>} true เมื่อบันทึกสำเร็จ
+ *
+ * @example
+ * const saved = await commitChanges({ accounts: [...state.accounts, newAccount] });
+ * if (saved) notifySuccess("เพิ่มบัญชีเรียบร้อย");
+ */
+export function commitChanges(changes, keysToSave = Object.keys(changes)) {
+  // เก็บเฉพาะ "ค่าเดิมของคีย์ที่เปลี่ยน" ไว้คืนค่า (ไม่ต้องคัดลอกทั้ง state ซึ่งช้ามากเมื่อข้อมูลเยอะ)
+  // ปลอดภัยเพราะทุกหน้าสร้างอาร์เรย์ใหม่เสมอ ไม่แก้อาร์เรย์เดิมโดยตรง
+  const previousValues = Object.fromEntries(Object.keys(changes).map((key) => [key, state[key]]));
+  // state เปลี่ยน "ทันที" ก่อนเริ่มบันทึก → หน้าเว็บวาดผลลัพธ์ได้เลยโดยไม่ต้องรอเซิร์ฟเวอร์ (optimistic update)
+  replaceState({ ...state, ...changes });
+  return saveData(keysToSave).then((isSaved) => {
+    if (!isSaved) {
+      // คืนเป็นค่าที่ตรงกับเซิร์ฟเวอร์ล่าสุด (ถ้ามี) — ถูกต้องแม้มีหลายการบันทึกซ้อนกัน
+      const rollback = Object.fromEntries(Object.keys(previousValues).map((key) => [
+        key, key in confirmedValues ? confirmedValues[key] : previousValues[key],
+      ]));
+      replaceState({ ...state, ...rollback });
+    }
+    return isSaved;
+  });
+}
+
+/**
+ * มีเครื่องอื่นแก้ข้อมูลชุดเดียวกัน: แจ้งผู้ใช้ แล้วโหลดข้อมูลล่าสุดจากเซิร์ฟเวอร์
+ * @param {string[]} conflictingKeys
+ */
+async function handleSaveConflict(conflictingKeys) {
+  finishProgress();
+  setSyncStatus("มีข้อมูลใหม่จากเครื่องอื่น");
+  notifyError("ข้อมูลถูกแก้ไขจากเครื่องอื่น ระบบกำลังโหลดข้อมูลล่าสุด กรุณาทำรายการอีกครั้ง");
+  const collections = conflictingKeys.filter((key) => key !== META_KEY);
+  const cacheEntries = await readCacheEntries([...collections, META_KEY]);
+  // ทำเครื่องหมายว่าแคชเก่า เพื่อบังคับให้ดาวน์โหลดใหม่
+  conflictingKeys.forEach((key) => {
+    if (cacheEntries[key]) cacheEntries[key].revision = "stale";
+  });
+  // หน่วงไว้ให้หน้าเว็บคืนค่า state เดิมของมันก่อน แล้วค่อยใส่ข้อมูลจากเซิร์ฟเวอร์ทับ
+  window.setTimeout(() => {
+    pendingSync = syncWithServer(collections, cacheEntries, true);
+  }, 0);
 }

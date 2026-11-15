@@ -1,164 +1,243 @@
+/**
+ * @file หน้า "คำอธิบายอัตโนมัติ" — แม่แบบรายการ แบ่งเป็น 2 ประเภท
+ *
+ * - ตามชื่อลูกค้า:  เก็บ customerId / customerName
+ * - ตามชื่อรายการ: เก็บ itemName (เช่น "ค่าไฟฟ้า") — ไม่ใช่คู่ค้า
+ *
+ * เมื่อเลือกชื่อลูกค้าหรือชื่อรายการในช่องคู่ค้าของสมุดรายวัน ระบบจะหาแม่แบบที่ตรงกัน
+ * แล้วเติมคำอธิบาย บัญชีเดบิต (บรรทัดที่ 1) และบัญชีเครดิต (บรรทัดที่ 2) ให้อัตโนมัติ
+ * (ข้อมูลเก็บใน state.autoDesc — ชื่อนี้ถูกบันทึกในฐานข้อมูลแล้ว จึงคงไว้)
+ */
+import { commitChanges, loadData, onDataRefresh, state } from "../../src/core/store.js";
+import { findAccountById, renderAccountOptions } from "../../src/accounting/accounts.js";
 import {
-  customerLabel,
-  esc,
-  getAccount,
-  getCustomer,
-  load,
-  replaceState,
-  save,
-  state,
-  uid, onDataRefresh
-} from "../../js/data.js";
-import { confirmAction, toast, toastError, toastSuccess } from "../../js/ui.js";
+  getCustomerDisplayName,
+  getTemplateItemNames,
+  parseCustomerOptionValue,
+  renderCustomerOptions,
+  toCustomerOptionValue,
+} from "../../src/accounting/customers.js";
+import { notifyError, notifySuccess, notify } from "../../src/components/notifications.js";
+import { confirmDialog } from "../../src/components/dialogs.js";
+import { byId } from "../../src/utils/dom.js";
+import { escapeHtml } from "../../src/utils/format.js";
+import { createId } from "../../src/utils/id.js";
 
-const autoDescriptionForm = document.getElementById("auto-description-form");
-const submitButton = document.getElementById("auto-description-submit");
-const cancelButton = document.getElementById("auto-description-cancel");
-const tableBody = document.querySelector("#auto-description-table tbody");
+const ruleForm = byId("auto-description-form");
+const submitButton = byId("auto-description-submit");
+const cancelButton = byId("auto-description-cancel");
+const typeSelect = byId("auto-description-type");
+const customerField = byId("auto-description-customer-field");
+const customerSelect = byId("auto-description-customer");
+const itemField = byId("auto-description-item-field");
+const itemInput = byId("auto-description-item");
+const itemList = byId("auto-description-item-list");
+const debitAccountSelect = byId("auto-description-debit-account");
+const creditAccountSelect = byId("auto-description-credit-account");
+const descriptionInput = byId("auto-description-text");
+const customerTableBody = document.querySelector("#auto-description-table tbody");
+const itemTableBody = document.querySelector("#auto-description-item-table tbody");
+
+/** id ของแม่แบบที่กำลังแก้ไข (null = เพิ่มใหม่) */
 let editingRuleId = null;
 
-function accountOptions(selectedId = "") {
-  return '<option value="">-- เลือกบัญชี --</option>' + state.accounts
-    .map((account) => `<option value="${esc(account.id)}" ${account.id === selectedId ? "selected" : ""}>${esc(account.code)} - ${esc(account.name)}</option>`)
-    .join("");
+/** แม่แบบตามชื่อรายการ (ที่เหลือเป็นแม่แบบตามลูกค้า รวมข้อมูลรุ่นเก่า) */
+function isItemRule(rule) {
+  return Boolean(String(rule.itemName || "").trim());
 }
 
-function customerOptions(selectedValue = "") {
-  let html = "";
-  state.customers.forEach((customer) => {
-    html += `<option value="id:${esc(customer.id)}">${esc(customerLabel(customer))}</option>`;
-  });
-  state.customerNames.forEach((row) => {
-    const name = (row.name || "").trim();
-    if (!name || state.customers.some((customer) => (customer.name || "").trim() === name)) return;
-    html += `<option value="name:${esc(name)}">${esc(name)}</option>`;
-  });
-  const customerSelect = document.getElementById("auto-description-customer");
-  customerSelect.innerHTML = '<option value="">-- เลือกลูกค้า --</option>' + html;
-  if (selectedValue) customerSelect.value = selectedValue;
+/** แสดงช่องลูกค้าหรือช่องชื่อรายการตามประเภทแม่แบบที่เลือก */
+function syncTypeFields() {
+  const isItem = typeSelect.value === "item";
+  customerField.hidden = isItem;
+  itemField.hidden = !isItem;
 }
 
-function resolveCustomer(rawValue) {
-  if (rawValue.startsWith("id:")) {
-    const customerId = rawValue.slice(3);
-    const customer = state.customers.find((item) => item.id === customerId);
-    return { customerId, customerName: customer ? customerLabel(customer) : "" };
+/** สร้างตัวเลือกลูกค้า ชื่อรายการ และบัญชีใหม่ โดยคงค่าที่เลือกไว้ */
+function renderFormOptions() {
+  const selectedCustomer = customerSelect.value;
+  const selectedDebitAccount = debitAccountSelect.value;
+  const selectedCreditAccount = creditAccountSelect.value;
+  customerSelect.innerHTML = `<option value="">-- เลือกลูกค้า --</option>${renderCustomerOptions()}`;
+  // ชื่อในแม่แบบที่สร้างจากสมุดรายวัน (ไม่มีในทะเบียน/ไฟล์) → เพิ่มเป็นตัวเลือก เพื่อให้แก้ไขแม่แบบนั้นได้
+  const existingValues = new Set([...customerSelect.options].map((option) => option.value));
+  const extraNames = [...new Set(state.autoDesc
+    .filter((rule) => !isItemRule(rule) && !rule.customerId && rule.customerName)
+    .map((rule) => rule.customerName))]
+    .filter((name) => !existingValues.has(`name:${name}`));
+  if (extraNames.length) {
+    customerSelect.insertAdjacentHTML("beforeend", `<optgroup label="ชื่อจากสมุดรายวัน">${extraNames
+      .map((name) => `<option value="name:${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}</optgroup>`);
   }
-  if (rawValue.startsWith("name:")) return { customerId: "", customerName: rawValue.slice(5) };
-  return { customerId: "", customerName: "" };
+  customerSelect.value = selectedCustomer;
+  itemList.innerHTML = getTemplateItemNames().map((name) => `<option value="${escapeHtml(name)}"></option>`).join("");
+  debitAccountSelect.innerHTML = renderAccountOptions(selectedDebitAccount);
+  creditAccountSelect.innerHTML = renderAccountOptions(selectedCreditAccount);
 }
 
 function resetForm() {
   editingRuleId = null;
-  autoDescriptionForm.reset();
+  const currentType = typeSelect.value;
+  ruleForm.reset();
+  typeSelect.value = currentType; // คงประเภทไว้ สะดวกเมื่อเพิ่มหลายแม่แบบติดกัน
+  typeSelect.disabled = false;
+  syncTypeFields();
   submitButton.textContent = "เพิ่มคำอธิบาย";
   cancelButton.hidden = true;
 }
 
-function ruleCustomerLabel(rule) {
-  if (rule.customerId) {
-    const customer = getCustomer(rule.customerId);
-    if (customer) return customerLabel(customer);
+/** ชื่อบัญชีในตาราง (แสดงคำเตือนถ้าบัญชีถูกลบไปแล้ว) */
+function renderAccountCell(accountId) {
+  const account = findAccountById(accountId);
+  return account
+    ? `${escapeHtml(account.code)} - ${escapeHtml(account.name)}`
+    : '<span class="unbalanced">(ไม่พบบัญชี)</span>';
+}
+
+/**
+ * @param {object[]} rules
+ * @param {(rule: object) => string} getName ชื่อในคอลัมน์แรก
+ * @param {string} emptyText
+ */
+function renderRuleRows(rules, getName, emptyText) {
+  return rules.length
+    ? rules.map((rule) => `<tr>
+        <td>${escapeHtml(getName(rule))}</td>
+        <td>${renderAccountCell(rule.debitAccountId)}</td>
+        <td>${renderAccountCell(rule.creditAccountId)}</td>
+        <td>${escapeHtml(rule.text || "")}</td>
+        <td class="actions-cell">
+          <button type="button" class="small secondary" data-edit-rule="${escapeHtml(rule.id)}">แก้ไข</button>
+          <button type="button" class="small danger" data-delete-rule="${escapeHtml(rule.id)}">ลบ</button>
+        </td>
+      </tr>`).join("")
+    : `<tr><td colspan="5" class="muted">${emptyText}</td></tr>`;
+}
+
+function renderRuleTables() {
+  customerTableBody.innerHTML = renderRuleRows(
+    state.autoDesc.filter((rule) => !isItemRule(rule)),
+    (rule) => `${getCustomerDisplayName(rule)}${rule.partyType === "supplier" ? " (ซัพพลายเออร์)" : ""}`,
+    "ยังไม่มีแม่แบบตามชื่อลูกค้า",
+  );
+  itemTableBody.innerHTML = renderRuleRows(
+    state.autoDesc.filter(isItemRule),
+    (rule) => rule.itemName.trim(),
+    "ยังไม่มีแม่แบบตามชื่อรายการ",
+  );
+}
+
+function renderPage() {
+  renderFormOptions();
+  renderRuleTables();
+}
+
+function startEditingRule(rule) {
+  editingRuleId = rule.id;
+  renderFormOptions();
+  const isItem = isItemRule(rule);
+  typeSelect.value = isItem ? "item" : "customer";
+  typeSelect.disabled = true; // แก้ไขได้เฉพาะเนื้อหา ไม่สลับประเภท
+  syncTypeFields();
+  customerSelect.value = isItem ? "" : toCustomerOptionValue(rule);
+  itemInput.value = isItem ? rule.itemName.trim() : "";
+  debitAccountSelect.value = rule.debitAccountId || "";
+  creditAccountSelect.value = rule.creditAccountId || "";
+  descriptionInput.value = rule.text || "";
+  submitButton.textContent = "บันทึกการแก้ไข";
+  cancelButton.hidden = false;
+  (isItem ? itemInput : customerSelect).focus();
+  ruleForm.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function deleteRule(ruleId) {
+  if (!(await confirmDialog("ยืนยันการลบคำอธิบายอัตโนมัตินี้?"))) return;
+  const isSaved = await commitChanges({ autoDesc: state.autoDesc.filter((rule) => rule.id !== ruleId) });
+  if (isSaved && editingRuleId === ruleId) resetForm();
+  renderPage();
+  if (isSaved) notifySuccess("ลบคำอธิบายอัตโนมัติเรียบร้อย");
+}
+
+/**
+ * ข้อมูลส่วนที่ระบุว่าแม่แบบเป็นของใคร/รายการใด
+ * @returns {{ error: string } | { target: object }}
+ */
+function readRuleTarget() {
+  if (typeSelect.value === "item") {
+    const itemName = itemInput.value.trim();
+    if (!itemName) return { error: "กรุณาระบุชื่อรายการ" };
+    const duplicate = state.autoDesc.find((rule) =>
+      rule.id !== editingRuleId && String(rule.itemName || "").trim().toLowerCase() === itemName.toLowerCase());
+    if (duplicate) return { error: `มีแม่แบบของชื่อรายการ “${itemName}” อยู่แล้ว — แก้ไขแม่แบบเดิมแทน` };
+    return { target: { itemName } };
   }
-  return rule.customerName || "-";
+  if (!customerSelect.value) return { error: "กรุณาเลือกลูกค้า" };
+  const { customerId, customerName } = parseCustomerOptionValue(customerSelect.value);
+  return {
+    target: {
+      ...(customerId ? { customerId } : {}),
+      ...(customerName ? { customerName } : {}),
+    },
+  };
 }
 
-function renderAutoDesc() {
-  const currentCustomer = document.getElementById("auto-description-customer").value;
-  const debitValue = document.getElementById("auto-description-debit-account").value;
-  const creditValue = document.getElementById("auto-description-credit-account").value;
-  customerOptions(currentCustomer);
-  document.getElementById("auto-description-debit-account").innerHTML = accountOptions(debitValue);
-  document.getElementById("auto-description-credit-account").innerHTML = accountOptions(creditValue);
+async function handleFormSubmit(event) {
+  event.preventDefault();
+  const debitAccountId = debitAccountSelect.value;
+  const creditAccountId = creditAccountSelect.value;
+  const text = descriptionInput.value.trim();
+  const targetResult = readRuleTarget();
+  if (targetResult.error) {
+    notifyError(targetResult.error);
+    return;
+  }
+  if (!debitAccountId || !creditAccountId || !text) {
+    notifyError("กรอกข้อมูลให้ครบก่อนบันทึก");
+    return;
+  }
 
-  tableBody.innerHTML = state.autoDesc.length
-    ? state.autoDesc.map((rule) => {
-      const debit = getAccount(rule.debitAccountId);
-      const credit = getAccount(rule.creditAccountId);
-      return `<tr><td>${esc(ruleCustomerLabel(rule))}</td><td>${debit ? `${esc(debit.code)} - ${esc(debit.name)}` : '<span class="unbalanced">(ไม่พบบัญชี)</span>'}</td>
-        <td>${credit ? `${esc(credit.code)} - ${esc(credit.name)}` : '<span class="unbalanced">(ไม่พบบัญชี)</span>'}</td><td>${esc(rule.text || "")}</td>
-        <td class="actions-cell"><button class="small secondary" data-edit-auto-description="${esc(rule.id)}">แก้ไข</button><button class="small danger" data-delete-auto-description="${esc(rule.id)}">ลบ</button></td></tr>`;
-    }).join("")
-    : '<tr><td colspan="5" class="muted">ยังไม่มีคำอธิบายอัตโนมัติ</td></tr>';
-
-  tableBody.querySelectorAll("[data-edit-auto-description]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const rule = state.autoDesc.find((existingRule) => existingRule.id === button.dataset.editAutoDescription);
-      if (!rule) return;
-      editingRuleId = rule.id;
-      const selectedCustomer = rule.customerId ? `id:${rule.customerId}` : `name:${rule.customerName || ""}`;
-      customerOptions(selectedCustomer);
-      document.getElementById("auto-description-debit-account").value = rule.debitAccountId || "";
-      document.getElementById("auto-description-credit-account").value = rule.creditAccountId || "";
-      document.getElementById("auto-description-text").value = rule.text || "";
-      submitButton.textContent = "บันทึกการแก้ไข";
-      cancelButton.hidden = false;
-      document.getElementById("auto-description-customer").focus();
-    });
-  });
-
-  tableBody.querySelectorAll("[data-delete-auto-description]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      if (!(await confirmAction("ยืนยันการลบคำอธิบายอัตโนมัตินี้?"))) return;
-      const ruleId = button.dataset.deleteAutoDescription;
-      const previousState = JSON.parse(JSON.stringify(state));
-      replaceState({ ...state, autoDesc: state.autoDesc.filter((rule) => rule.id !== ruleId) });
-      if (!(await save(["autoDesc"]))) {
-        replaceState(previousState);
-        renderAutoDesc();
-        return;
+  const ruleData = { debitAccountId, creditAccountId, text, ...targetResult.target };
+  const isEditing = Boolean(editingRuleId);
+  const rules = isEditing
+    // สร้างแม่แบบใหม่ทั้งก้อน (ไม่ใช้ข้อมูลเดิมที่อาจค้างอยู่ รวมถึงฟิลด์ keyword รุ่นเก่า)
+    // คงประเภทคู่ค้า (ลูกค้า/ซัพพลายเออร์) ที่เลือกไว้จากสมุดรายวัน ถ้ายังเป็นชื่อเดิม
+    ? state.autoDesc.map((rule) => (rule.id === editingRuleId
+      ? {
+        id: rule.id,
+        ...(rule.partyType && ruleData.customerName === rule.customerName && !ruleData.customerId ? { partyType: rule.partyType } : {}),
+        ...ruleData,
       }
-      if (editingRuleId === ruleId) resetForm();
-      renderAutoDesc();
-      toastSuccess("ลบคำอธิบายอัตโนมัติเรียบร้อย");
-    });
-  });
+      : rule))
+    : [...state.autoDesc, { id: createId(), ...ruleData }];
+
+  const isSaved = await commitChanges({ autoDesc: rules });
+  if (isSaved) resetForm();
+  renderPage();
+  if (isSaved) notifySuccess(isEditing ? "แก้ไขคำอธิบายอัตโนมัติเรียบร้อย" : "เพิ่มคำอธิบายอัตโนมัติเรียบร้อย");
 }
 
+function handleTableClick(event) {
+  const button = event.target.closest("button");
+  if (!button) return;
+  if (button.dataset.editRule) {
+    const rule = state.autoDesc.find((item) => item.id === button.dataset.editRule);
+    if (rule) startEditingRule(rule);
+  } else if (button.dataset.deleteRule) {
+    deleteRule(button.dataset.deleteRule);
+  }
+}
+
+customerTableBody.addEventListener("click", handleTableClick);
+itemTableBody.addEventListener("click", handleTableClick);
+typeSelect.addEventListener("change", syncTypeFields);
 cancelButton.addEventListener("click", () => {
   resetForm();
-  toast("ยกเลิกการแก้ไขแล้ว");
+  notify("ยกเลิกการแก้ไขแล้ว");
 });
+ruleForm.addEventListener("submit", handleFormSubmit);
 
-autoDescriptionForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const rawCustomer = document.getElementById("auto-description-customer").value;
-  const debitAccountId = document.getElementById("auto-description-debit-account").value;
-  const creditAccountId = document.getElementById("auto-description-credit-account").value;
-  const text = document.getElementById("auto-description-text").value.trim();
-  if (!rawCustomer || !debitAccountId || !creditAccountId || !text) {
-    toastError("กรอกข้อมูลให้ครบก่อนบันทึก");
-    return;
-  }
-  const { customerId, customerName } = resolveCustomer(rawCustomer);
-  const previousState = JSON.parse(JSON.stringify(state));
-  const autoDesc = state.autoDesc.slice();
-  const isEdit = Boolean(editingRuleId);
-  const payload = { debitAccountId, creditAccountId, text };
-  if (customerId) payload.customerId = customerId;
-  if (customerName) payload.customerName = customerName;
-  if (isEdit) {
-    const rule = autoDesc.find((existingRule) => existingRule.id === editingRuleId);
-    if (!rule) return resetForm();
-    delete rule.customerId;
-    delete rule.customerName;
-    delete rule.keyword;
-    Object.assign(rule, payload);
-  } else {
-    autoDesc.push({ id: uid(), ...payload });
-  }
-  replaceState({ ...state, autoDesc });
-  if (!(await save(["autoDesc"]))) {
-    replaceState(previousState);
-    renderAutoDesc();
-    return;
-  }
-  resetForm();
-  renderAutoDesc();
-  toastSuccess(isEdit ? "แก้ไขคำอธิบายอัตโนมัติเรียบร้อย" : "เพิ่มคำอธิบายอัตโนมัติเรียบร้อย");
-});
-
-if (await load(["autoDesc", "accounts", "customers", "customerNames"])) {
-  renderAutoDesc();
-  onDataRefresh(renderAutoDesc);
+if (await loadData(["autoDesc", "accounts", "customers", "suppliers", "customerNames"])) {
+  syncTypeFields();
+  renderPage();
+  onDataRefresh(renderPage);
 }

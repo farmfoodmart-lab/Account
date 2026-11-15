@@ -1,652 +1,1109 @@
+/**
+ * @file หน้า "สมุดรายวันทั่วไป" — บันทึก แก้ไข คัดลอก กลับรายการ และค้นหารายการบัญชี
+ *
+ * กฎการบันทึก (ตามหลักบัญชีคู่)
+ * - ต้องมีอย่างน้อย 2 บรรทัด และมีทั้งด้านเดบิตและด้านเครดิต
+ * - แต่ละบรรทัดใส่จำนวนเงินได้ด้านเดียว
+ * - ยอดรวมเดบิตต้องเท่ากับยอดรวมเครดิต
+ * - รายการในงวดที่ล็อกแล้วแก้ไข/ลบไม่ได้
+ * - รายการที่ใช้บัญชีลูกหนี้/เจ้าหนี้การค้า ต้องระบุคู่ค้า (ใช้สร้างทะเบียนลูกหนี้/เจ้าหนี้)
+ *
+ * ตัวช่วยกรอก
+ * - บรรทัดที่กรอกเดบิตแล้ว ช่องเครดิตจะถูกปิด (และกลับกัน)
+ * - สวิตช์ "เติมยอดแถวคู่อัตโนมัติ": กรอกแถวคี่ (1, 3, 5, ...) แล้วใส่ยอดเดียวกันในฝั่งตรงข้ามของแถวคู่ถัดไป (2, 4, 6, ...)
+ * - ช่องคู่ค้าพิมพ์ได้และมีรายการให้เลือก (ชื่อลูกค้า/ผู้ขาย หรือชื่อรายการ)
+ *   เลือก/พิมพ์ชื่อที่มีแม่แบบคำอธิบายอัตโนมัติ → เติมคำอธิบายและบัญชีให้
+ *   ชื่อรายการไม่ใช่คู่ค้า จึงเก็บในช่อง itemName (ไม่เข้าทะเบียนลูกหนี้/เจ้าหนี้)
+ */
+import { commitChanges, loadData, onDataRefresh, state } from "../../src/core/store.js";
+import { AMOUNT_EPSILON, ENTRY_KIND_LABELS } from "../../src/accounting/constants.js";
+import { calculateEntryTotal, getEntryKind } from "../../src/accounting/rules.js";
+import { findAccountById, renderAccountOptions } from "../../src/accounting/accounts.js";
 import {
-  AMOUNT_EPSILON,
-  ENTRY_KINDS,
-  accountOptionsHtml,
-  customerLabel,
-  entryKind,
-  entryTotal,
-  esc,
-  fmt,
-  fmtDateDMY,
-  fmtInt,
-  getAccount,
-  isLocked,
-  load,
-  lockMessage,
-  nextDocNo,
-  nextSeqNo,
-  onDataRefresh,
-  replaceState,
-  save,
-  state,
-  uid,
-} from "../../js/data.js";
+  getPartyOptions,
+  PARTY_GROUPS,
+  parseCustomerOptionValue,
+  parseItemOptionValue,
+  resolvePartyText,
+  toPartyText,
+} from "../../src/accounting/customers.js";
 import {
-  confirmAction,
-  debounce,
-  downloadCsvFile,
-  fileStamp,
-  todayIso,
-  toast,
-  toastError,
-  toastSuccess,
-} from "../../js/ui.js";
-import { toCsv } from "../../js/csv.js";
-import { toIsoDate } from "../../js/reports.js";
-import { SOURCE_LABELS } from "../../js/posting.js";
+  createDocumentNumber,
+  createJournalNumber,
+  getLockedPeriodMessage,
+  isDateLocked,
+} from "../../src/accounting/journal.js";
+import { roundMoney } from "../../src/accounting/posting.js";
+import { getControlAccountType } from "../../src/accounting/subledger.js";
+import { notifyError, notifySuccess, notify } from "../../src/components/notifications.js";
+import { createMonthFilter, getInitialMonthRange } from "../../src/components/month-filter.js";
+import { confirmDialog } from "../../src/components/dialogs.js";
+import { createCombobox } from "../../src/components/combobox.js";
+import { buildCsv } from "../../src/utils/csv.js";
+import { formatIsoDate, getFileDateStamp, getTodayIso, toIsoDate } from "../../src/utils/date.js";
+import { byId } from "../../src/utils/dom.js";
+import { downloadCsv } from "../../src/utils/download.js";
+import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
+import { createId } from "../../src/utils/id.js";
+import { debounce } from "../../src/utils/timing.js";
 
-const PAGE_SIZE = 40;
+/** จำนวนรายการที่แสดงต่อหน้า (กด "แสดงเพิ่ม" เพื่อดูต่อ) */
+const ENTRIES_PER_PAGE = 40;
 
-const $ = (id) => document.getElementById(id);
-const linesElement = $("journal-entry-lines");
-const journalEntryForm = $("journal-entry-form");
-const submitButton = $("journal-entry-submit");
-const cancelButton = $("journal-entry-cancel");
-const errorElement = $("journal-entry-error");
-const dateInput = $("journal-entry-date");
-const docNoInput = $("journal-entry-docno");
-const kindSelect = $("journal-entry-kind");
-const customerSelect = $("journal-entry-customer");
-const descInput = $("journal-entry-description");
-const balanceBar = $("journal-balance");
+const entryForm = byId("journal-entry-form");
+const linesContainer = byId("journal-entry-lines");
+const submitButton = byId("journal-entry-submit");
+const cancelEditButton = byId("journal-entry-cancel");
+const dateInput = byId("journal-entry-date");
+const documentNumberInput = byId("journal-entry-doc-number");
+const kindSelect = byId("journal-entry-kind");
+const partyInput = byId("journal-entry-customer");
+const partyTypeSelect = byId("journal-entry-party-type");
+const partyLabel = byId("journal-entry-party-label");
+const dueDateInput = byId("journal-entry-due");
+const autoMirrorSwitch = byId("journal-auto-mirror");
+const descriptionInput = byId("journal-entry-description");
+const balanceStatusBar = byId("journal-balance");
 
-const filters = { from: "", to: "", text: "", kind: "" };
+/** ตัวกรองรายการที่บันทึกแล้ว */
+const listFilters = { from: "", to: "", searchText: "", kind: "" };
+
+/** id ของรายการที่กำลังแก้ไข (null = บันทึกรายการใหม่) */
 let editingEntryId = null;
-let docNoTouched = false;
-let formDirty = false;
-let visibleLimit = PAGE_SIZE;
-let cachedAccountOptions = "";
+/** ผู้ใช้พิมพ์เลขที่เอกสารเองแล้ว → ไม่สร้างเลขอัตโนมัติทับ */
+let isDocumentNumberManual = false;
+/** ฟอร์มมีข้อมูลที่ยังไม่บันทึก → เตือนก่อนออกจากหน้า/แทนที่ฟอร์ม */
+let hasUnsavedChanges = false;
+/** จำนวนรายการที่แสดงอยู่ในตาราง */
+let visibleEntryLimit = ENTRIES_PER_PAGE;
+/** คีย์ localStorage จำสถานะสวิตช์ "เติมยอดแถวคู่อัตโนมัติ" */
+const AUTO_MIRROR_STORAGE_KEY = "journal_auto_mirror";
 
-/* ---------- customers ---------- */
-function customerOptionGroups() {
-  let html = "";
-  state.customers.forEach((customer) => {
-    const label = customerLabel(customer);
-    if (label) html += `<option value="id:${esc(customer.id)}">${esc(label)}</option>`;
-  });
-  const registered = new Set(state.customers.map((customer) => (customer.name || "").trim()));
-  const seen = new Set();
-  state.customerNames.forEach((row) => {
-    const name = (row.name || "").trim();
-    if (!name || registered.has(name) || seen.has(name)) return;
-    seen.add(name);
-    html += `<option value="name:${esc(name)}">${esc(name)}</option>`;
-  });
-  return html;
-}
+/** HTML ตัวเลือกบัญชี สร้างครั้งเดียวแล้วใช้ซ้ำทุกบรรทัด (เร็วกว่าสร้างใหม่ทุกครั้ง) */
+let accountOptionsHtml = "";
 
-function renderCustomerOptions() {
-  const current = customerSelect.value;
-  customerSelect.innerHTML = '<option value="">-- ไม่ระบุ --</option>' + customerOptionGroups();
-  if (current) customerSelect.value = current;
-}
+/* ================================================================== */
+/* บรรทัดบัญชีในฟอร์ม                                                    */
+/* ================================================================== */
 
-function resolveCustomer(rawValue) {
-  if (rawValue.startsWith("id:")) {
-    const customerId = rawValue.slice(3);
-    const customer = state.customers.find((item) => item.id === customerId);
-    return { customerId, customerName: customer ? customerLabel(customer) : "" };
-  }
-  if (rawValue.startsWith("name:")) return { customerId: "", customerName: rawValue.slice(5) };
-  return { customerId: "", customerName: "" };
-}
-
-/* ---------- entry lines ---------- */
+/** อ่านจำนวนเงินจากช่องกรอก (ปัดเป็นสตางค์) */
 function readAmount(input) {
   const value = parseFloat(input.value);
-  return Number.isFinite(value) ? Math.round(value * 100) / 100 : 0;
+  return Number.isFinite(value) ? roundMoney(value) : 0;
 }
 
-function lineRows() {
-  return [...linesElement.querySelectorAll(".je-line")];
+const getLineRows = () => [...linesContainer.querySelectorAll(".journal-line")];
+
+/** ยอดรวมเดบิต/เครดิตของบรรทัดที่กรอกอยู่ */
+function sumFormLines() {
+  let totalDebit = 0;
+  let totalCredit = 0;
+  let filledLineCount = 0;
+  getLineRows().forEach((row) => {
+    const debit = readAmount(row.querySelector(".journal-line-debit"));
+    const credit = readAmount(row.querySelector(".journal-line-credit"));
+    totalDebit += debit;
+    totalCredit += credit;
+    if (debit || credit) filledLineCount += 1;
+    // บรรทัดเครดิตย่อหน้าเข้า ตามรูปแบบสมุดรายวันทั่วไป
+    row.classList.toggle("is-credit", credit > 0 && !debit);
+  });
+  return { totalDebit, totalCredit, filledLineCount, difference: roundMoney(totalDebit - totalCredit) };
+}
+
+/**
+ * อัปเดตยอดรวมใต้ตารางและแถบสถานะการดุล
+ * @returns {boolean} รายการดุลหรือไม่
+ */
+function updateBalanceStatus() {
+  const { totalDebit, totalCredit, filledLineCount, difference } = sumFormLines();
+  const hasAmounts = Boolean(totalDebit || totalCredit);
+  const isBalanced = Math.abs(difference) < AMOUNT_EPSILON && totalDebit > 0;
+
+  const totalClass = `right ${isBalanced ? "balanced" : hasAmounts ? "unbalanced" : ""}`;
+  byId("total-debit").textContent = formatMoney(totalDebit);
+  byId("total-credit").textContent = formatMoney(totalCredit);
+  byId("total-debit").className = totalClass;
+  byId("total-credit").className = totalClass;
+
+  if (!hasAmounts) {
+    balanceStatusBar.className = "balance-bar idle";
+    balanceStatusBar.textContent = "กรอกจำนวนเงินด้านเดบิตและเครดิตอย่างน้อยด้านละ 1 บรรทัด";
+  } else if (isBalanced) {
+    balanceStatusBar.className = "balance-bar ok";
+    balanceStatusBar.textContent = `✓ รายการดุล · เดบิต = เครดิต = ${formatMoney(totalDebit)} (${formatNumber(filledLineCount)} บรรทัด)`;
+  } else {
+    balanceStatusBar.className = "balance-bar bad";
+    balanceStatusBar.textContent = `ยังไม่ดุล · ${difference > 0 ? "เดบิตมากกว่าเครดิต" : "เครดิตมากกว่าเดบิต"} ${formatMoney(Math.abs(difference))}`;
+  }
+  byId("balance-line").disabled = isBalanced || !hasAmounts;
+  return isBalanced;
+}
+
+/**
+ * ปิดช่องฝั่งตรงข้ามของบรรทัดที่มีจำนวนเงินแล้ว
+ * (มีเดบิต → ปิดเครดิต, มีเครดิต → ปิดเดบิต, ว่างทั้งคู่ → เปิดทั้งคู่)
+ * @param {HTMLElement} row
+ */
+function syncLineInputs(row) {
+  const debitInput = row.querySelector(".journal-line-debit");
+  const creditInput = row.querySelector(".journal-line-credit");
+  const hasDebit = debitInput.value.trim() !== "";
+  const hasCredit = creditInput.value.trim() !== "";
+  // ข้อมูลเก่าที่มีทั้งสองฝั่ง: เปิดไว้ทั้งคู่ให้ผู้ใช้แก้ไขได้
+  debitInput.disabled = hasCredit && !hasDebit;
+  creditInput.disabled = hasDebit && !hasCredit;
+}
+
+/**
+ * สวิตช์ "เติมยอดแถวคู่อัตโนมัติ": แถวคี่ (1, 3, 5, ...) เป็นต้นทางของแถวคู่ถัดไป (2, 4, 6, ...)
+ * กรอกแถวคี่ฝั่งไหน ใส่ยอดเดียวกันในฝั่งตรงข้ามของแถวคู่ที่จับคู่กัน
+ * @param {HTMLElement} changedRow บรรทัดที่เพิ่งถูกแก้ไข
+ */
+function mirrorToPairedLine(changedRow) {
+  if (!autoMirrorSwitch.checked) return;
+  const rows = getLineRows();
+  const rowIndex = rows.indexOf(changedRow);
+  const isOddRow = rowIndex % 2 === 0; // ลำดับเริ่มที่ 0 → แถวที่ 1, 3, 5 คือ index 0, 2, 4
+  const pairedRow = rows[rowIndex + 1];
+  if (rowIndex < 0 || !isOddRow || !pairedRow) return;
+
+  const sourceDebit = changedRow.querySelector(".journal-line-debit").value;
+  const sourceCredit = changedRow.querySelector(".journal-line-credit").value;
+  pairedRow.querySelector(".journal-line-debit").value = sourceCredit; // แถวคี่เครดิต → แถวคู่เดบิต
+  pairedRow.querySelector(".journal-line-credit").value = sourceDebit; // แถวคี่เดบิต → แถวคู่เครดิต
+  syncLineInputs(pairedRow);
+}
+
+/** เปิดสวิตช์: เติมยอดให้ทุกคู่ที่แถวคี่มีจำนวนเงินอยู่แล้ว */
+function mirrorAllPairs() {
+  getLineRows().forEach((row, index) => {
+    const hasAmount = row.querySelector(".journal-line-debit").value || row.querySelector(".journal-line-credit").value;
+    if (index % 2 === 0 && hasAmount) mirrorToPairedLine(row);
+  });
 }
 
 function renumberLines() {
-  lineRows().forEach((row, index) => {
-    row.querySelector(".je-no").textContent = String(index + 1);
+  getLineRows().forEach((row, index) => {
+    row.querySelector(".journal-line-number").textContent = String(index + 1);
   });
 }
 
-function updateTotals() {
-  let debit = 0;
-  let credit = 0;
-  let filledLines = 0;
-  lineRows().forEach((row) => {
-    const lineDebit = readAmount(row.querySelector(".je-debit"));
-    const lineCredit = readAmount(row.querySelector(".je-credit"));
-    debit += lineDebit;
-    credit += lineCredit;
-    if (lineDebit || lineCredit) filledLines += 1;
-    row.classList.toggle("is-credit", lineCredit > 0 && !lineDebit);
-  });
-  const debitElement = $("total-debit");
-  const creditElement = $("total-credit");
-  debitElement.textContent = fmt(debit);
-  creditElement.textContent = fmt(credit);
-  const difference = Math.round((debit - credit) * 100) / 100;
-  const balanced = Math.abs(difference) < AMOUNT_EPSILON && debit > 0;
-  debitElement.className = `right ${balanced ? "balanced" : debit || credit ? "unbalanced" : ""}`;
-  creditElement.className = debitElement.className;
-
-  if (!debit && !credit) {
-    balanceBar.className = "balance-bar idle";
-    balanceBar.textContent = "กรอกจำนวนเงินด้านเดบิตและเครดิตอย่างน้อยด้านละ 1 บรรทัด";
-  } else if (balanced) {
-    balanceBar.className = "balance-bar ok";
-    balanceBar.textContent = `✓ รายการดุล · เดบิต = เครดิต = ${fmt(debit)} (${fmtInt(filledLines)} บรรทัด)`;
-  } else {
-    balanceBar.className = "balance-bar bad";
-    balanceBar.textContent = `ยังไม่ดุล · ${difference > 0 ? "เดบิตมากกว่าเครดิต" : "เครดิตมากกว่าเดบิต"} ${fmt(Math.abs(difference))}`;
-  }
-  $("balance-line").disabled = balanced || (!debit && !credit);
-  return balanced;
-}
-
-function addLine(data = {}, { focus = false } = {}) {
+/**
+ * เพิ่มบรรทัดบัญชีหนึ่งบรรทัดในฟอร์ม
+ * @param {{ accountId?: string, debit?: number, credit?: number }} [lineData]
+ * @param {{ focus?: boolean }} [options]
+ * @returns {HTMLElement}
+ */
+function addLine(lineData = {}, { focus = false } = {}) {
   const row = document.createElement("div");
-  row.className = "je-line";
-  row.innerHTML = `<span class="je-no"></span>
-    <select class="je-account" aria-label="บัญชี">${cachedAccountOptions}</select>
-    <input type="number" class="je-debit" placeholder="0.00" min="0" step="0.01" inputmode="decimal" aria-label="เดบิต" value="${data.debit || ""}">
-    <input type="number" class="je-credit" placeholder="0.00" min="0" step="0.01" inputmode="decimal" aria-label="เครดิต" value="${data.credit || ""}">
-    <button type="button" class="je-remove" title="ลบบรรทัด" aria-label="ลบบรรทัด">&times;</button>`;
-  row.querySelector(".je-account").value = data.accountId || "";
-  const debitInput = row.querySelector(".je-debit");
-  const creditInput = row.querySelector(".je-credit");
-  // One side per line: typing in one column clears the other.
-  debitInput.addEventListener("input", () => {
-    if (debitInput.value) creditInput.value = "";
-    updateTotals();
-  });
-  creditInput.addEventListener("input", () => {
-    if (creditInput.value) debitInput.value = "";
-    updateTotals();
-  });
-  row.querySelector(".je-remove").addEventListener("click", () => {
-    if (lineRows().length <= 2) {
-      toastError("ต้องมีอย่างน้อย 2 บรรทัด");
+  row.className = "journal-line";
+  row.innerHTML = `<span class="journal-line-number"></span>
+    <select class="journal-line-account" aria-label="บัญชี">${accountOptionsHtml}</select>
+    <input type="number" class="journal-line-debit" placeholder="0.00" min="0" step="0.01" inputmode="decimal" aria-label="เดบิต" value="${lineData.debit || ""}">
+    <input type="number" class="journal-line-credit" placeholder="0.00" min="0" step="0.01" inputmode="decimal" aria-label="เครดิต" value="${lineData.credit || ""}">
+    <button type="button" class="journal-line-remove" title="ลบบรรทัด" aria-label="ลบบรรทัด">&times;</button>`;
+  row.querySelector(".journal-line-account").value = lineData.accountId || "";
+
+  // หนึ่งบรรทัดมีได้ด้านเดียว: กรอกช่องหนึ่งแล้วปิดใช้งานอีกช่องทันที
+  const debitInput = row.querySelector(".journal-line-debit");
+  const creditInput = row.querySelector(".journal-line-credit");
+  const handleAmountInput = () => {
+    syncLineInputs(row);
+    mirrorToPairedLine(row);
+    updateBalanceStatus();
+  };
+  debitInput.addEventListener("input", handleAmountInput);
+  creditInput.addEventListener("input", handleAmountInput);
+  syncLineInputs(row);
+  row.querySelector(".journal-line-remove").addEventListener("click", () => {
+    if (getLineRows().length <= 2) {
+      notifyError("ต้องมีอย่างน้อย 2 บรรทัด");
       return;
     }
     row.remove();
     renumberLines();
-    updateTotals();
-    formDirty = true;
+    updateBalanceStatus();
+    hasUnsavedChanges = true;
   });
-  linesElement.appendChild(row);
+
+  linesContainer.appendChild(row);
   renumberLines();
-  if (focus) row.querySelector(".je-account").focus();
+  if (focus) row.querySelector(".journal-line-account").focus();
   return row;
 }
 
-function resetLines(lines) {
-  linesElement.innerHTML = "";
-  if (Array.isArray(lines) && lines.length) {
-    lines.forEach((line) => addLine(line));
-    if (lines.length < 2) addLine();
-  } else {
-    addLine();
-    addLine();
-  }
-  updateTotals();
+/** แทนที่บรรทัดทั้งหมด (อย่างน้อย 2 บรรทัดเสมอ) */
+function replaceLines(lines = []) {
+  linesContainer.innerHTML = "";
+  lines.forEach((line) => addLine(line));
+  while (getLineRows().length < 2) addLine();
+  updateBalanceStatus();
 }
 
-/** Put the current difference into the first line that has no amount yet. */
-function balanceLines() {
-  let debit = 0;
-  let credit = 0;
-  lineRows().forEach((row) => {
-    debit += readAmount(row.querySelector(".je-debit"));
-    credit += readAmount(row.querySelector(".je-credit"));
-  });
-  const difference = Math.round((debit - credit) * 100) / 100;
+/** ปุ่ม "ปรับยอดให้ดุล": ใส่ผลต่างลงในบรรทัดแรกที่ยังว่าง (ไม่มีบรรทัดว่างจะเพิ่มบรรทัดใหม่) */
+function fillBalancingAmount() {
+  const { difference } = sumFormLines();
   if (Math.abs(difference) < AMOUNT_EPSILON) return;
-  let target = lineRows().find((row) => !readAmount(row.querySelector(".je-debit")) && !readAmount(row.querySelector(".je-credit")));
-  if (!target) target = addLine();
-  const field = difference > 0 ? ".je-credit" : ".je-debit";
-  target.querySelector(field).value = Math.abs(difference).toFixed(2);
-  updateTotals();
-  formDirty = true;
-  const accountField = target.querySelector(".je-account");
-  if (!accountField.value) accountField.focus();
+
+  const isEmptyLine = (row) => !readAmount(row.querySelector(".journal-line-debit")) && !readAmount(row.querySelector(".journal-line-credit"));
+  const targetRow = getLineRows().find(isEmptyLine) || addLine();
+  // เดบิตเกิน → เติมฝั่งเครดิต, เครดิตเกิน → เติมฝั่งเดบิต
+  const targetField = difference > 0 ? ".journal-line-credit" : ".journal-line-debit";
+  targetRow.querySelector(targetField).value = Math.abs(difference).toFixed(2);
+  syncLineInputs(targetRow);
+  updateBalanceStatus();
+  hasUnsavedChanges = true;
+
+  const accountSelect = targetRow.querySelector(".journal-line-account");
+  if (!accountSelect.value) accountSelect.focus();
 }
 
-/* ---------- form state ---------- */
-function setEditing(isEditing, label = "") {
-  journalEntryForm.classList.toggle("is-editing", isEditing);
-  $("journal-form-title").textContent = isEditing ? `แก้ไขรายการ ${label}`.trim() : "บันทึกรายการใหม่";
+/* ================================================================== */
+/* สถานะของฟอร์ม                                                         */
+/* ================================================================== */
+
+/** ป้ายและคำแนะนำของช่องคู่ค้า ตามประเภทที่เลือก ("" = ทั้งหมด) */
+const PARTY_TYPE_TEXTS = {
+  "": { label: "ลูกค้า / ซัพพลายเออร์ / ชื่อรายการ", placeholder: "พิมพ์หรือเลือก ชื่อลูกค้า / ซัพพลายเออร์ / ชื่อรายการ" },
+  customer: { label: "ชื่อลูกค้า", placeholder: "พิมพ์หรือเลือกชื่อลูกค้า" },
+  supplier: { label: "ชื่อซัพพลายเออร์", placeholder: "พิมพ์หรือเลือกชื่อซัพพลายเออร์" },
+  item: { label: "ชื่อรายการ", placeholder: "พิมพ์หรือเลือกชื่อรายการ" },
+};
+
+/** ตัวเลือกในช่องคู่ค้า เฉพาะกลุ่มของประเภทที่เลือก */
+function getFilteredPartyOptions() {
+  const group = PARTY_GROUPS[partyTypeSelect.value];
+  const options = getPartyOptions();
+  return group ? options.filter((option) => option.group === group) : options;
+}
+
+/**
+ * แปลงข้อความในช่องคู่ค้าเป็นค่าภายใน โดยคำนึงถึงประเภทที่เลือก
+ * - ประเภท "ชื่อรายการ" → ข้อความที่พิมพ์เป็นชื่อรายการเสมอ (ไม่เข้าทะเบียนลูกหนี้/เจ้าหนี้)
+ * - ประเภทลูกค้า/ซัพพลายเออร์ → ไม่ตีความเป็นชื่อรายการ
+ * @returns {string}
+ */
+function resolvePartyInput() {
+  const text = partyInput.value.trim();
+  if (!text) return "";
+  const partyType = partyTypeSelect.value;
+  if (partyType === "item") return `item:${text}`;
+  const value = resolvePartyText(text);
+  return partyType && parseItemOptionValue(value) ? `name:${text}` : value;
+}
+
+/** ประเภทของค่าในช่องคู่ค้า (ใช้ตั้งช่องประเภทตอนเปิดรายการเดิม) */
+function detectPartyType(text) {
+  const value = resolvePartyText(text);
+  if (!value) return "";
+  const option = getPartyOptions().find((item) => item.value === value);
+  return Object.keys(PARTY_GROUPS).find((type) => PARTY_GROUPS[type] === option?.group) || "";
+}
+
+function syncPartyTypeTexts() {
+  const texts = PARTY_TYPE_TEXTS[partyTypeSelect.value] || PARTY_TYPE_TEXTS[""];
+  partyLabel.textContent = texts.label;
+  partyInput.placeholder = texts.placeholder;
+}
+
+/** ประเภทในช่อง "ประเภท" ถูกเลือกให้อัตโนมัติจากชื่อ (true) หรือผู้ใช้เลือกเอง (false) */
+let isPartyTypeAuto = false;
+
+/** ชื่อใหม่ที่ยังไม่ได้เลือกประเภท → ไฮไลต์ช่องประเภทให้ผู้ใช้เลือก */
+function updatePartyTypeWarning() {
+  const needsChoice = Boolean(partyInput.value.trim()) && !partyTypeSelect.value;
+  partyTypeSelect.classList.toggle("needs-choice", needsChoice);
+  partyTypeSelect.setAttribute("aria-invalid", String(needsChoice));
+  partyTypeSelect.title = needsChoice ? "ชื่อนี้ยังไม่มีในรายการ — กรุณาเลือกประเภท" : "";
+}
+
+function setPartyType(type, isAuto) {
+  partyTypeSelect.value = type;
+  isPartyTypeAuto = isAuto;
+  syncPartyTypeTexts();
+  updatePartyTypeWarning();
+}
+
+/**
+ * ตั้งประเภทตามชื่อที่พิมพ์
+ * - ชื่อตรงกับรายการที่มีอยู่ → เลือกประเภทให้อัตโนมัติ (ยกเว้นผู้ใช้เลือกประเภทไว้เองแล้ว)
+ * - ชื่อใหม่ (ไม่ตรง) และประเภทเคยถูกเลือกอัตโนมัติ → ล้างประเภท บังคับให้ผู้ใช้เลือกเอง
+ * @param {boolean} isFinal true = พิมพ์เสร็จแล้ว (ออกจากช่อง), false = ระหว่างพิมพ์ (ตั้งเฉพาะเมื่อตรง)
+ */
+function autoDetectPartyType(isFinal) {
+  const text = partyInput.value.trim();
+  const canOverride = !partyTypeSelect.value || isPartyTypeAuto;
+  const detectedType = text ? detectPartyType(text) : "";
+  if (detectedType) {
+    if (canOverride && detectedType !== partyTypeSelect.value) setPartyType(detectedType, true);
+    else updatePartyTypeWarning();
+    return;
+  }
+  if (!isFinal) return;
+  if (isPartyTypeAuto) setPartyType("", false);
+  else updatePartyTypeWarning();
+}
+
+/** ช่องคู่ค้า: พิมพ์ได้ + มีรายการให้เลือก 3 กลุ่ม (ชื่อลูกค้า / ชื่อซัพพลายเออร์ / ชื่อรายการ) กรองตามประเภทได้ */
+const partyCombobox = createCombobox({
+  input: partyInput,
+  getOptions: getFilteredPartyOptions,
+  onSelect: (option) => {
+    // เลือกจากรายการ → รู้ประเภทจากกลุ่มของตัวเลือก
+    const type = Object.keys(PARTY_GROUPS).find((key) => PARTY_GROUPS[key] === option.group) || "";
+    if (type && type !== partyTypeSelect.value) setPartyType(type, true);
+    else updatePartyTypeWarning();
+    applyAutoDescription(option.value);
+  },
+});
+
+partyTypeSelect.addEventListener("change", () => {
+  isPartyTypeAuto = false; // ผู้ใช้เลือกเอง
+  syncPartyTypeTexts();
+  updatePartyTypeWarning();
+  // ชื่อเดิมไม่ใช่ประเภทที่เลือกแล้ว → ล้างออก ให้เลือกใหม่
+  const currentType = detectPartyType(partyInput.value);
+  if (partyTypeSelect.value && currentType && currentType !== partyTypeSelect.value) partyInput.value = "";
+  lastAutoFilledParty = "";
+  partyInput.focus();
+  partyCombobox.open(partyInput.value);
+});
+
+function setEditingMode(isEditing, entryLabel = "") {
+  entryForm.classList.toggle("is-editing", isEditing);
+  byId("journal-form-title").textContent = isEditing ? `แก้ไขรายการ ${entryLabel}`.trim() : "บันทึกรายการใหม่";
   submitButton.textContent = isEditing ? "บันทึกการแก้ไข" : "บันทึกรายการ";
-  cancelButton.hidden = !isEditing;
+  cancelEditButton.hidden = !isEditing;
 }
 
-function suggestDocNo() {
-  if (docNoTouched) return;
-  docNoInput.value = nextDocNo(dateInput.value, editingEntryId || "");
+/** รูปแบบเลขที่อัตโนมัติ JV-YYYYMM-#### (กลุ่มที่ 1 = ปีเดือน) */
+const AUTO_DOCUMENT_NUMBER_PATTERN = /^JV-(\d{6})-\d+$/;
+
+/**
+ * เติมเลขที่เอกสารถัดไปตามเดือนของวันที่ที่เลือก
+ * - ผู้ใช้ยังไม่ได้พิมพ์เอง → สร้างเลขใหม่เสมอ
+ * - เลขเดิมเป็นรูปแบบอัตโนมัติแต่คนละเดือนกับวันที่ (รวมถึงตอนแก้ไขรายการ) → เปลี่ยนเป็นเลขของเดือนใหม่
+ * - เลขที่พิมพ์เองแบบอื่น หรือเดือนตรงกันอยู่แล้ว → คงไว้
+ */
+function suggestDocumentNumber() {
+  const currentNumber = documentNumberInput.value.trim();
+  const autoMatch = currentNumber.match(AUTO_DOCUMENT_NUMBER_PATTERN);
+  const selectedMonth = (toIsoDate(dateInput.value) || "").slice(0, 7).replace("-", "");
+  const isOtherMonth = Boolean(autoMatch && selectedMonth && autoMatch[1] !== selectedMonth);
+  if (isDocumentNumberManual && !isOtherMonth) return;
+  documentNumberInput.value = createJournalNumber(dateInput.value, editingEntryId || "");
+  if (isOtherMonth) isDocumentNumberManual = false;
 }
 
+/**
+ * เมื่อตัวกรองรายการเลือกไว้ 1 เดือน (เช่น เดือนล่าสุด หรือกด "เดือนนี้") และฟอร์มยังว่างอยู่
+ * → เลื่อนวันที่ในฟอร์มไปเดือนนั้น เพื่อให้เลขที่เอกสารเป็นของเดือนที่กำลังดู
+ */
+function syncFormDateWithFilterMonth() {
+  if (editingEntryId || hasUnsavedChanges) return;
+  const from = filterInputs.from.value;
+  const to = filterInputs.to.value;
+  if (!from || !to || from.slice(0, 7) !== to.slice(0, 7)) return;
+  const month = from.slice(0, 7);
+  if ((toIsoDate(dateInput.value) || "").startsWith(month)) return;
+
+  // วันนี้อยู่ในเดือนนั้น → ใช้วันนี้, ไม่เช่นนั้นใช้วันที่ล่าสุดที่มีรายการในเดือนนั้น (หรือวันที่ 1)
+  const today = getTodayIso();
+  let nextDate = today.startsWith(month) ? today : "";
+  if (!nextDate) {
+    state.entries.forEach((entry) => {
+      const isoDate = toIsoDate(entry.date);
+      if (isoDate.startsWith(month) && isoDate > nextDate) nextDate = isoDate;
+    });
+  }
+  dateInput.value = nextDate || from;
+  suggestDocumentNumber();
+}
+
+/**
+ * ล้างฟอร์มเพื่อบันทึกรายการใหม่
+ * @param {{ keepDate?: boolean }} [options] keepDate = คงวันที่เดิมไว้ (สะดวกเมื่อบันทึกหลายรายการวันเดียวกัน)
+ */
 function resetForm({ keepDate = false } = {}) {
   editingEntryId = null;
-  docNoTouched = false;
-  formDirty = false;
-  if (!keepDate || !dateInput.value) dateInput.value = todayIso();
-  descInput.value = "";
-  customerSelect.value = "";
+  isDocumentNumberManual = false;
+  hasUnsavedChanges = false;
+  if (!keepDate || !dateInput.value) dateInput.value = getTodayIso();
+  descriptionInput.value = "";
+  partyInput.value = "";
+  // บันทึกหลายรายการติดกัน (keepDate) → คงประเภทที่ผู้ใช้เลือกเองไว้ (ประเภทที่ตั้งอัตโนมัติจากชื่อเดิมล้างออก)
+  if (!keepDate || isPartyTypeAuto) setPartyType("", false);
+  else updatePartyTypeWarning();
+  dueDateInput.value = "";
+  lastAutoFilledParty = "";
   kindSelect.value = "general";
-  errorElement.textContent = "";
-  setEditing(false);
-  resetLines();
-  suggestDocNo();
+  setEditingMode(false);
+  replaceLines();
+  suggestDocumentNumber();
 }
 
-function fillForm(entry, { mode }) {
-  // mode: "edit" | "copy" | "reverse"
-  editingEntryId = mode === "edit" ? entry.id : null;
-  dateInput.value = mode === "edit" ? toIsoDate(entry.date) || entry.date || "" : todayIso();
-  docNoTouched = mode === "edit" && Boolean(entry.docNo);
-  docNoInput.value = mode === "edit" ? entry.docNo || "" : "";
-  kindSelect.value = mode === "edit" ? entryKind(entry) : "general";
-  descInput.value = mode === "reverse" ? `กลับรายการ ${entry.docNo || ""} ${entry.desc || ""}`.replace(/\s+/g, " ").trim() : entry.desc || "";
-  renderCustomerOptions();
-  customerSelect.value = entry.customerId ? `id:${entry.customerId}` : entry.customerName ? `name:${entry.customerName}` : "";
+/**
+ * เติมฟอร์มจากรายการที่บันทึกไว้
+ * @param {object} entry
+ * @param {"edit" | "copy" | "reverse"} mode
+ *   edit    = แก้ไขรายการเดิม
+ *   copy    = สร้างรายการใหม่ที่เหมือนเดิม (วันที่วันนี้)
+ *   reverse = สร้างรายการกลับบัญชี (สลับเดบิต/เครดิต) เพื่อยกเลิกรายการเดิมโดยไม่ต้องลบ
+ */
+function fillFormFromEntry(entry, mode) {
+  const isEditMode = mode === "edit";
+  editingEntryId = isEditMode ? entry.id : null;
+  dateInput.value = isEditMode ? toIsoDate(entry.date) || entry.date || "" : getTodayIso();
+  isDocumentNumberManual = isEditMode && Boolean(entry.docNo);
+  documentNumberInput.value = isEditMode ? entry.docNo || "" : "";
+  kindSelect.value = isEditMode ? getEntryKind(entry) : "general";
+  descriptionInput.value = mode === "reverse"
+    ? `กลับรายการ ${entry.docNo || ""} ${entry.desc || ""}`.replace(/\s+/g, " ").trim()
+    : entry.desc || "";
+  partyInput.value = toPartyText(entry);
+  // ประเภทที่บันทึกไว้กับรายการ ถือเป็นการเลือกของผู้ใช้ (ไม่ถูกเปลี่ยนอัตโนมัติ)
+  setPartyType(entry.itemName && !entry.customerName ? "item" : entry.partyType || detectPartyType(partyInput.value), false);
+  dueDateInput.value = isEditMode ? toIsoDate(entry.due) : "";
+  lastAutoFilledParty = "";
+
   const lines = mode === "reverse"
     ? entry.lines.map((line) => ({ accountId: line.accountId, debit: line.credit, credit: line.debit }))
     : entry.lines;
-  resetLines(lines);
-  errorElement.textContent = "";
-  setEditing(mode === "edit", entry.docNo || fmtDateDMY(entry.date));
-  if (mode !== "edit") suggestDocNo();
-  formDirty = mode !== "edit";
-  journalEntryForm.scrollIntoView({ behavior: "smooth", block: "start" });
-  if (mode !== "edit") toast(mode === "reverse" ? "สร้างรายการกลับบัญชีแล้ว ตรวจสอบและกดบันทึก" : "คัดลอกรายการแล้ว ตรวจสอบและกดบันทึก");
+  replaceLines(lines);
+  setEditingMode(isEditMode, entry.docNo || formatDate(entry.date));
+  if (!isEditMode) suggestDocumentNumber();
+  hasUnsavedChanges = !isEditMode;
+  entryForm.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  if (mode === "reverse") notify("สร้างรายการกลับบัญชีแล้ว ตรวจสอบและกดบันทึก");
+  else if (mode === "copy") notify("คัดลอกรายการแล้ว ตรวจสอบและกดบันทึก");
 }
 
-function applyAutoDescription(value) {
-  if (!value) return;
-  const { customerId, customerName } = resolveCustomer(value);
-  const rule = state.autoDesc.find((item) =>
-    (customerId && item.customerId === customerId) ||
-    (customerName && item.customerName === customerName),
-  );
-  if (!rule) return;
-  descInput.value = rule.text || "";
-  const rows = lineRows();
-  if (rows[0] && rule.debitAccountId) rows[0].querySelector(".je-account").value = rule.debitAccountId;
-  if (rows[1] && rule.creditAccountId) rows[1].querySelector(".je-account").value = rule.creditAccountId;
-  toast("เติมข้อมูลจากคำอธิบายอัตโนมัติแล้ว");
-  rows[0]?.querySelector(".je-debit").focus();
+/** คู่ค้าล่าสุดที่เติมคำอธิบายอัตโนมัติไปแล้ว (กันการเติมซ้ำทุกครั้งที่พิมพ์) */
+let lastAutoFilledParty = "";
+
+/**
+ * เลือก/พิมพ์คู่ค้าหรือชื่อรายการที่มีแม่แบบคำอธิบายอัตโนมัติ → เติมคำอธิบาย บัญชีเดบิต (บรรทัด 1) และบัญชีเครดิต (บรรทัด 2)
+ * @param {string} partyOptionValue ค่าคู่ค้า เช่น "id:abc", "name:ร้านสมใจ" หรือ "item:ค่าไฟฟ้า"
+ */
+function applyAutoDescription(partyOptionValue) {
+  const itemName = parseItemOptionValue(partyOptionValue);
+  const { customerId, customerName } = itemName ? { customerId: "", customerName: "" } : parseCustomerOptionValue(partyOptionValue);
+  if (!customerId && !customerName && !itemName) return;
+  const rule = itemName
+    ? state.autoDesc.find((item) => String(item.itemName || "").trim() === itemName)
+    : state.autoDesc.find((item) => !item.itemName
+      && ((customerId && item.customerId === customerId) || (customerName && item.customerName === customerName)));
+  const partyKey = `${customerId}|${customerName}|${itemName}`;
+  if (!rule || partyKey === lastAutoFilledParty) return;
+  lastAutoFilledParty = partyKey;
+
+  descriptionInput.value = rule.text || "";
+  const [debitRow, creditRow] = getLineRows();
+  if (debitRow && rule.debitAccountId) debitRow.querySelector(".journal-line-account").value = rule.debitAccountId;
+  if (creditRow && rule.creditAccountId) creditRow.querySelector(".journal-line-account").value = rule.creditAccountId;
+  notify("เติมคำอธิบายและบัญชีจากคำอธิบายอัตโนมัติแล้ว");
 }
 
-/* ---------- saved entries ---------- */
-function entrySearchText(entry) {
-  return [
-    entry.docNo,
-    entry.desc,
-    entry.customerName,
-    fmtDateDMY(entry.date),
-    String(entryTotal(entry)),
-    ...entry.lines.map((line) => {
-      const account = getAccount(line.accountId);
-      return account ? `${account.code} ${account.name}` : "";
-    }),
-  ].join(" ").toLowerCase();
+/**
+ * อ่านและตรวจสอบฟอร์ม
+ * @returns {{ error: string, focusElement?: HTMLElement } | { entryData: object }}
+ */
+function readEntryForm() {
+  if (!dateInput.value) return { error: "กรุณาระบุวันที่", focusElement: dateInput };
+
+  const originalEntry = editingEntryId ? state.entries.find((entry) => entry.id === editingEntryId) : null;
+  if (isDateLocked(dateInput.value) || (originalEntry && isDateLocked(originalEntry.date))) {
+    return { error: getLockedPeriodMessage(), focusElement: dateInput };
+  }
+  if (!descriptionInput.value.trim()) return { error: "กรุณาระบุคำอธิบายรายการ", focusElement: descriptionInput };
+
+  const lines = [];
+  for (const row of getLineRows()) {
+    const accountSelect = row.querySelector(".journal-line-account");
+    const debit = readAmount(row.querySelector(".journal-line-debit"));
+    const credit = readAmount(row.querySelector(".journal-line-credit"));
+    if (!debit && !credit) continue; // บรรทัดว่างไม่บันทึก
+    if (!accountSelect.value) return { error: "มีบรรทัดที่กรอกจำนวนเงินแต่ยังไม่ได้เลือกบัญชี", focusElement: accountSelect };
+    if (debit < 0 || credit < 0) return { error: "จำนวนเงินต้องไม่ติดลบ" };
+    if (debit > 0 && credit > 0) return { error: "แต่ละบรรทัดใส่ได้เฉพาะเดบิตหรือเครดิตอย่างใดอย่างหนึ่ง" };
+    lines.push({ accountId: accountSelect.value, debit, credit });
+  }
+  if (lines.length < 2) return { error: "ต้องมีอย่างน้อย 2 บรรทัดที่มีจำนวนเงิน" };
+  if (!lines.some((line) => line.debit > 0) || !lines.some((line) => line.credit > 0)) return { error: "ต้องมีทั้งด้านเดบิตและด้านเครดิต" };
+  if (!updateBalanceStatus()) return { error: "ยอดเดบิตและเครดิตต้องเท่ากัน — กด “ปรับยอดให้ดุล” หรือแก้ไขจำนวนเงิน" };
+
+  // รายการลูกหนี้/เจ้าหนี้ต้องรู้ว่าเป็นของใคร จึงจะติดตามยอดค้างในทะเบียนได้
+  const partyValue = resolvePartyInput();
+  const itemName = parseItemOptionValue(partyValue);
+  const party = itemName ? { customerId: "", customerName: "" } : parseCustomerOptionValue(partyValue);
+
+  // ชื่อใหม่ที่ยังไม่มีในรายการ → ต้องเลือกประเภท เพื่อจัดกลุ่มและสร้างแม่แบบคำอธิบายอัตโนมัติให้ถูกประเภท
+  const partyType = partyTypeSelect.value;
+  const isNewParty = Boolean(partyValue) && !getPartyOptions().some((option) => option.value === partyValue);
+  if (isNewParty && !partyType) {
+    return {
+      error: `“${partyInput.value.trim()}” ยังไม่มีในรายการ — กรุณาเลือกประเภท (ลูกค้า / ซัพพลายเออร์ / ชื่อรายการ)`,
+      focusElement: partyTypeSelect,
+    };
+  }
+  const controlType = lines.map((line) => getControlAccountType(line.accountId)).find(Boolean);
+  if (controlType && !party.customerName) {
+    const isReceivable = controlType === "receivable";
+    return {
+      error: `รายการนี้ใช้บัญชี${isReceivable ? "ลูกหนี้" : "เจ้าหนี้"}การค้า กรุณาระบุคู่ค้า (${isReceivable ? "ลูกค้า" : "ผู้ขาย"})`,
+      focusElement: partyInput,
+    };
+  }
+
+  const documentNumber = documentNumberInput.value.trim() || createJournalNumber(dateInput.value, editingEntryId || "");
+  if (state.entries.some((entry) => entry.docNo === documentNumber && entry.id !== editingEntryId)) {
+    return { error: `เลขที่เอกสาร ${documentNumber} ถูกใช้แล้ว`, focusElement: documentNumberInput };
+  }
+
+  return {
+    entryData: {
+      date: dateInput.value,
+      due: dueDateInput.value,
+      docNo: documentNumber,
+      kind: kindSelect.value || "general",
+      desc: descriptionInput.value.trim(),
+      lines,
+      customerId: party.customerId,
+      customerName: party.customerName,
+      itemName,
+      // ชื่อคู่ค้าที่ไม่มีในทะเบียน: จำประเภทไว้ (ใช้จัดกลุ่มลูกค้า/ซัพพลายเออร์ในช่องคู่ค้า)
+      partyType: !party.customerId && party.customerName && (partyType === "customer" || partyType === "supplier") ? partyType : "",
+    },
+    isNewParty,
+  };
 }
 
-function visibleEntries() {
-  const needle = filters.text.toLowerCase();
+/**
+ * ชื่อใหม่ (ลูกค้า / ซัพพลายเออร์ / ชื่อรายการ) → สร้างแม่แบบคำอธิบายอัตโนมัติจากรายการนี้
+ * ใช้คำอธิบาย บัญชีเดบิตบรรทัดแรก และบัญชีเครดิตบรรทัดแรก
+ * @param {object} entryData ผลจาก readEntryForm
+ * @returns {object | null} แม่แบบใหม่ หรือ null ถ้ามีแม่แบบของชื่อนี้อยู่แล้ว
+ */
+function buildTemplateForNewParty(entryData) {
+  const { customerName, itemName, partyType, desc, lines } = entryData;
+  const debitLine = lines.find((line) => line.debit > 0);
+  const creditLine = lines.find((line) => line.credit > 0);
+  if (!desc || !debitLine || !creditLine || (!customerName && !itemName)) return null;
+  const hasTemplate = state.autoDesc.some((rule) => (itemName
+    ? String(rule.itemName || "").trim() === itemName
+    : !rule.itemName && !rule.customerId && rule.customerName === customerName));
+  if (hasTemplate) return null;
+  return {
+    id: createId(),
+    debitAccountId: debitLine.accountId,
+    creditAccountId: creditLine.accountId,
+    text: desc,
+    ...(itemName ? { itemName } : { customerName, ...(partyType ? { partyType } : {}) }),
+  };
+}
+
+async function handleFormSubmit(event) {
+  event.preventDefault();
+  const result = readEntryForm();
+  if (result.error) {
+    await notifyError(result.error, { title: "ยังบันทึกรายการไม่ได้" });
+    result.focusElement?.focus();
+    return;
+  }
+
+  const newTemplate = result.isNewParty ? buildTemplateForNewParty(result.entryData) : null;
+  const { customerId, customerName, itemName, partyType, due, ...entryFields } = result.entryData;
+  // ฟิลด์ที่ไม่บังคับ: ใส่เฉพาะเมื่อมีค่า
+  const optionalFields = {
+    ...(customerId ? { customerId } : {}),
+    ...(customerName ? { customerName } : {}),
+    ...(itemName ? { itemName } : {}),
+    ...(partyType ? { partyType } : {}),
+    ...(due ? { due } : {}),
+  };
+  const now = new Date().toISOString();
+  const isEditing = Boolean(editingEntryId);
+
+  const editedEntryId = editingEntryId;
+  let savedEntry;
+  let entries;
+  if (isEditing) {
+    entries = state.entries.map((entry) => {
+      if (entry.id !== editingEntryId) return entry;
+      // ลบคู่ค้า/วันครบกำหนดเดิมออกก่อน เผื่อผู้ใช้ลบค่าออก
+      const {
+        customerId: _oldCustomerId, customerName: _oldCustomerName, itemName: _oldItemName,
+        partyType: _oldPartyType, due: _oldDue, ...baseEntry
+      } = entry;
+      savedEntry = { ...baseEntry, ...entryFields, ...optionalFields, updatedAt: now };
+      return savedEntry;
+    });
+  } else {
+    // ต่อท้ายอาร์เรย์ (ไม่เรียงใหม่) → การบันทึกส่งเฉพาะ chunk สุดท้ายซึ่งเล็ก จึงเร็ว
+    // ทุกหน้าที่แสดงผลเรียงตามวันที่เองอยู่แล้ว
+    savedEntry = { id: createId(), ...entryFields, ...optionalFields, createdAt: now };
+    entries = [...state.entries, savedEntry];
+  }
+
+  // บันทึกแบบทันที: แสดงผลและล้างฟอร์มให้กรอกรายการถัดไปได้เลย ส่วนการส่งขึ้นเซิร์ฟเวอร์ทำเบื้องหลัง
+  // ชื่อใหม่ → บันทึกแม่แบบคำอธิบายอัตโนมัติไปพร้อมกัน (สำเร็จหรือไม่สำเร็จพร้อมรายการ)
+  const savePromise = commitChanges(newTemplate ? { entries, autoDesc: [...state.autoDesc, newTemplate] } : { entries });
+  if (newTemplate) {
+    notify(`บันทึกแม่แบบคำอธิบายอัตโนมัติของ “${newTemplate.itemName || newTemplate.customerName}” แล้ว`);
+  }
+  monthFilter?.refresh(); // รายการเดือนใหม่จะขึ้นในตัวเลือกเดือนทันที
+  resetForm({ keepDate: true });
+  renderEntryList();
+  renderMissingNumberBanner();
+  notifySuccess(`${isEditing ? "แก้ไข" : "บันทึก"}รายการ ${entryFields.docNo} แล้ว`);
+  descriptionInput.focus();
+
+  if (await savePromise) return;
+  // ส่งขึ้นเซิร์ฟเวอร์ไม่สำเร็จ: รายการถูกคืนค่าแล้ว → นำข้อมูลกลับมาใส่ฟอร์มให้กดบันทึกใหม่ได้ทันที
+  renderEntryList();
+  renderMissingNumberBanner();
+  restoreFailedEntry(savedEntry, editedEntryId);
+}
+
+/**
+ * นำรายการที่ส่งขึ้นเซิร์ฟเวอร์ไม่สำเร็จกลับมาใส่ฟอร์ม (ถ้าผู้ใช้ยังไม่ได้เริ่มกรอกรายการใหม่)
+ * @param {object} failedEntry ข้อมูลที่พยายามบันทึก
+ * @param {string | null} editedEntryId id ของรายการเดิม (กรณีแก้ไข)
+ */
+function restoreFailedEntry(failedEntry, editedEntryId) {
+  const message = `รายการ ${failedEntry.docNo || ""} ${failedEntry.desc || ""}`.replace(/\s+/g, " ").trim();
+  if (hasUnsavedChanges || editingEntryId) {
+    notify(`${message} ยังไม่ถูกบันทึก — กรุณาบันทึกใหม่อีกครั้ง`);
+    return;
+  }
+  const isEditing = Boolean(editedEntryId && state.entries.some((entry) => entry.id === editedEntryId));
+  fillFormFromEntry(isEditing ? { ...failedEntry, id: editedEntryId } : failedEntry, isEditing ? "edit" : "restore");
+  if (!isEditing) {
+    // fillFormFromEntry แบบคัดลอกใช้วันที่วันนี้ → ใส่ค่าที่ผู้ใช้กรอกไว้กลับคืน
+    dateInput.value = toIsoDate(failedEntry.date) || dateInput.value;
+    documentNumberInput.value = failedEntry.docNo || "";
+    isDocumentNumberManual = Boolean(failedEntry.docNo);
+    kindSelect.value = getEntryKind(failedEntry);
+    dueDateInput.value = toIsoDate(failedEntry.due) || "";
+  }
+  // ป๊อปอัปข้อผิดพลาดแสดงจากระบบบันทึกแล้ว ที่นี่แจ้งเพิ่มแบบไม่ขัดจังหวะ
+  notify(`${message} ยังไม่ถูกบันทึก — นำข้อมูลกลับมาใส่ฟอร์มแล้ว กด "บันทึกรายการ" อีกครั้ง`);
+}
+
+/* ================================================================== */
+/* รายการที่บันทึกแล้ว                                                    */
+/* ================================================================== */
+
+/** ข้อความรวมของรายการ สำหรับค้นหา (เลขที่ คำอธิบาย ลูกค้า วันที่ ยอดเงิน และบัญชี) */
+function buildSearchText(entry) {
+  const accountTexts = entry.lines.map((line) => {
+    const account = findAccountById(line.accountId);
+    return account ? `${account.code} ${account.name}` : "";
+  });
+  return [entry.docNo, entry.desc, entry.customerName, entry.itemName, formatDate(entry.date), String(calculateEntryTotal(entry)), ...accountTexts]
+    .join(" ")
+    .toLowerCase();
+}
+
+function getFilteredEntries() {
+  const searchText = listFilters.searchText.toLowerCase();
   return state.entries.filter((entry) => {
-    if (filters.kind && entryKind(entry) !== filters.kind) return false;
-    if (filters.from || filters.to) {
-      const date = toIsoDate(entry.date);
-      if (!date || (filters.from && date < filters.from) || (filters.to && date > filters.to)) return false;
+    if (listFilters.kind && getEntryKind(entry) !== listFilters.kind) return false;
+    if (listFilters.from || listFilters.to) {
+      const isoDate = toIsoDate(entry.date);
+      if (!isoDate || (listFilters.from && isoDate < listFilters.from) || (listFilters.to && isoDate > listFilters.to)) return false;
     }
-    return !needle || entrySearchText(entry).includes(needle);
+    return !searchText || buildSearchText(entry).includes(searchText);
   });
 }
 
-/** Entries posted by the receivables/payables pages are edited there, not here. */
-function linkedSource(entry) {
-  if (!entry.source || entry.source.type === "closing") return null;
-  return SOURCE_LABELS[entry.source.type] || null;
+/**
+ * ปุ่มจัดการของแต่ละรายการ: แก้ไข, ลบ และเมนู "⋯" (คัดลอก / กลับรายการ)
+ * รายการในงวดที่ล็อกแล้วแก้ไข/ลบไม่ได้ รายการปิดบัญชีแก้ไขไม่ได้ (ลบแล้วสร้างใหม่ที่หน้าการตั้งค่า)
+ */
+function renderEntryActions(entry) {
+  const isLocked = isDateLocked(entry.date);
+  const isClosingEntry = entry.source?.type === "closing";
+  const lockedAttributes = isLocked ? ' disabled title="อยู่ในงวดที่ปิดแล้ว"' : "";
+  let editAttributes = lockedAttributes;
+  if (!editAttributes && isClosingEntry) editAttributes = ' disabled title="รายการปิดบัญชี ลบแล้วสร้างใหม่ได้ที่หน้าการตั้งค่า"';
+  const entryId = escapeHtml(entry.id);
+
+  return `<div class="actions-cell journal-row-actions">
+    <button type="button" class="small secondary" data-edit-entry="${entryId}"${editAttributes}>แก้ไข</button>
+    <button type="button" class="small danger" data-delete-entry="${entryId}"${lockedAttributes}>ลบ</button>
+    <div class="more-menu">
+      <button type="button" class="small ghost more-menu-button" data-toggle-menu aria-haspopup="menu" aria-expanded="false" title="คำสั่งเพิ่มเติม">⋯</button>
+      <div class="more-menu-list" role="menu">
+        <button type="button" role="menuitem" data-copy-entry="${entryId}">คัดลอกเป็นรายการใหม่</button>
+        <button type="button" role="menuitem" data-reverse-entry="${entryId}">กลับรายการ</button>
+      </div>
+    </div>
+  </div>`;
 }
 
-function entryActions(entry) {
-  const locked = isLocked(entry.date);
-  const linked = Boolean(linkedSource(entry));
-  const blockedTitle = locked ? "อยู่ในงวดที่ปิดแล้ว" : "รายการอัตโนมัติ แก้ไขที่หน้าต้นทาง";
-  const blocked = locked || linked ? ` disabled title="${blockedTitle}"` : "";
-  return `<div class="actions-cell gj-actions">
-    <button type="button" class="small ghost" data-copy-entry="${esc(entry.id)}" title="คัดลอกเป็นรายการใหม่">คัดลอก</button>
-    <button type="button" class="small ghost" data-reverse-entry="${esc(entry.id)}" title="สร้างรายการกลับบัญชี"${linked ? ` disabled title="${blockedTitle}"` : ""}>กลับรายการ</button>
-    <button type="button" class="small secondary" data-edit-entry="${esc(entry.id)}"${blocked || (entry.source?.type === "closing" ? ' disabled title="รายการปิดบัญชี ลบแล้วสร้างใหม่ได้ที่หน้าการตั้งค่า"' : "")}>แก้ไข</button>
-    <button type="button" class="small danger" data-delete-entry="${esc(entry.id)}"${blocked}>ลบ</button></div>`;
+/** ปิดเมนู "⋯" ทั้งหมดที่เปิดอยู่ */
+function closeAllMenus() {
+  document.querySelectorAll(".more-menu.is-open").forEach((menu) => {
+    menu.classList.remove("is-open");
+    menu.querySelector("[data-toggle-menu]").setAttribute("aria-expanded", "false");
+  });
 }
 
-function renderEntry(entry) {
-  const debitLines = entry.lines.filter((line) => Number(line.debit) > 0);
-  const creditLines = entry.lines.filter((line) => !(Number(line.debit) > 0));
-  const ordered = [...debitLines, ...creditLines];
-  const kind = entryKind(entry);
-  const debitTotal = entry.lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0);
-  const creditTotal = entry.lines.reduce((sum, line) => sum + (Number(line.credit) || 0), 0);
-  const unbalanced = Math.abs(debitTotal - creditTotal) >= AMOUNT_EPSILON;
-  const rows = ordered.map((line, index) => {
-    const account = getAccount(line.accountId);
-    const isCredit = !(Number(line.debit) > 0);
-    const name = account ? esc(account.name) : '<span class="unbalanced">(บัญชีถูกลบ)</span>';
-    const first = index === 0;
+/** เปิด/ปิดเมนู "⋯" โดยวางเมนูไว้ใต้ปุ่ม ชิดขวา (ใช้ตำแหน่ง fixed ไม่ให้ถูกกล่องตารางตัด) */
+function toggleMenu(toggleButton) {
+  const menu = toggleButton.closest(".more-menu");
+  const shouldOpen = !menu.classList.contains("is-open");
+  closeAllMenus();
+  if (!shouldOpen) return;
+  menu.classList.add("is-open");
+  toggleButton.setAttribute("aria-expanded", "true");
+  const buttonRect = toggleButton.getBoundingClientRect();
+  const menuList = menu.querySelector(".more-menu-list");
+  menuList.style.top = `${buttonRect.bottom + 4}px`;
+  menuList.style.left = `${Math.max(8, buttonRect.right - menuList.offsetWidth)}px`;
+}
+
+/** ป้ายสถานะใต้รายการ: ล็อก / ครบกำหนด / ประเภท / ไม่ดุล / คู่ค้า */
+function renderEntryBadges(entry) {
+  const totalDebit = entry.lines.reduce((total, line) => total + (Number(line.debit) || 0), 0);
+  const totalCredit = entry.lines.reduce((total, line) => total + (Number(line.credit) || 0), 0);
+  const entryKind = getEntryKind(entry);
+  return [
+    isDateLocked(entry.date) ? '<span class="badge" title="อยู่ในงวดที่ปิดแล้ว">🔒 ปิดงวด</span>' : "",
+    entry.due ? `<span class="badge warning" title="วันครบกำหนดชำระ">ครบกำหนด ${escapeHtml(formatDate(entry.due))}</span>` : "",
+    entryKind !== "general" ? `<span class="badge info">${ENTRY_KIND_LABELS[entryKind]}</span>` : "",
+    Math.abs(totalDebit - totalCredit) >= AMOUNT_EPSILON ? '<span class="badge danger">ไม่ดุล</span>' : "",
+    entry.customerName ? `<span class="badge">${escapeHtml(entry.customerName)}</span>` : "",
+    entry.itemName ? `<span class="badge info" title="ชื่อรายการ">${escapeHtml(entry.itemName)}</span>` : "",
+  ].join(" ");
+}
+
+/**
+ * หนึ่งรายการในรูปแบบสมุดรายวันทั่วไป: บรรทัดเดบิตก่อน บรรทัดเครดิตย่อหน้า แล้วตามด้วยคำอธิบายในวงเล็บ
+ * (แต่ละรายการเป็น <tbody> ของตัวเอง เพื่อจัดรูปแบบเป็นกลุ่มได้)
+ */
+function renderEntryRows(entry) {
+  const isDebitLine = (line) => Number(line.debit) > 0;
+  const orderedLines = [...entry.lines.filter(isDebitLine), ...entry.lines.filter((line) => !isDebitLine(line))];
+  const lineRows = orderedLines.map((line, lineIndex) => {
+    const account = findAccountById(line.accountId);
+    const isFirstLine = lineIndex === 0;
+    const accountName = account ? escapeHtml(account.name) : '<span class="unbalanced">(บัญชีถูกลบ)</span>';
     return `<tr>
-      <td class="nowrap">${first ? esc(fmtDateDMY(entry.date) || "ไม่ระบุวันที่") : ""}</td>
-      <td>${first ? `<span class="gj-doc">${esc(entry.docNo || "-")}</span>` : ""}</td>
-      <td class="${isCredit ? "gj-credit" : ""}">${name}</td>
-      <td class="code">${account ? esc(account.code) : ""}</td>
-      <td class="right">${line.debit ? fmt(line.debit) : ""}</td>
-      <td class="right">${line.credit ? fmt(line.credit) : ""}</td>
-      <td class="right">${first ? entryActions(entry) : ""}</td>
+      <td class="nowrap">${isFirstLine ? escapeHtml(formatDate(entry.date) || "ไม่ระบุวันที่") : ""}</td>
+      <td>${isFirstLine ? `<span class="journal-doc-number">${escapeHtml(entry.docNo || "-")}</span>` : ""}</td>
+      <td class="${isDebitLine(line) ? "" : "journal-credit-line"}">${accountName}</td>
+      <td class="code center">${account ? escapeHtml(account.code) : ""}</td>
+      <td class="right">${line.debit ? formatMoney(line.debit) : ""}</td>
+      <td class="right">${line.credit ? formatMoney(line.credit) : ""}</td>
+      <td class="right">${isFirstLine ? renderEntryActions(entry) : ""}</td>
     </tr>`;
   }).join("");
-  const source = linkedSource(entry);
-  const tags = [
-    isLocked(entry.date) ? '<span class="badge" title="อยู่ในงวดที่ปิดแล้ว">🔒 ปิดงวด</span>' : "",
-    source ? `<a class="badge accent" href="../${source.page}/${source.page}.html" title="สร้างอัตโนมัติ แก้ไขได้ที่หน้าต้นทาง">${esc(source.label)}${entry.source.docNo ? ` ${esc(entry.source.docNo)}` : ""}</a>` : "",
-    kind !== "general" ? `<span class="badge info">${ENTRY_KINDS[kind]}</span>` : "",
-    unbalanced ? '<span class="badge danger">ไม่ดุล</span>' : "",
-    entry.customerName ? `<span class="badge">${esc(entry.customerName)}</span>` : "",
-  ].join(" ");
-  return `<tbody class="gj-entry">${rows}<tr class="gj-desc"><td></td><td></td><td colspan="5">(${esc(entry.desc || "ไม่มีคำอธิบาย")}) ${tags}</td></tr></tbody>`;
+  const memoRow = `<tr class="journal-memo-row"><td></td><td></td><td colspan="5">(${escapeHtml(entry.desc || "ไม่มีคำอธิบาย")}) ${renderEntryBadges(entry)}</td></tr>`;
+  return `<tbody class="journal-table-entry">${lineRows}${memoRow}</tbody>`;
 }
 
-function renderJournal() {
-  const list = $("journal-list");
-  const entries = visibleEntries();
-  const totalDebit = entries.reduce((total, entry) => total + entryTotal(entry), 0);
-  const filtered = filters.from || filters.to || filters.text || filters.kind;
-  $("je-filter-summary").textContent = filtered
-    ? `แสดง ${fmtInt(entries.length)} จาก ${fmtInt(state.entries.length)} รายการ · ยอดรวม ${fmt(totalDebit)}`
-    : `ทั้งหมด ${fmtInt(entries.length)} รายการ · ยอดรวม ${fmt(totalDebit)}`;
+function renderEntryList() {
+  const listContainer = byId("journal-list");
+  const filteredEntries = getFilteredEntries();
+  const filteredTotal = filteredEntries.reduce((total, entry) => total + calculateEntryTotal(entry), 0);
+  const isFiltered = listFilters.from || listFilters.to || listFilters.searchText || listFilters.kind;
+  byId("journal-filter-summary").textContent = isFiltered
+    ? `แสดง ${formatNumber(filteredEntries.length)} จาก ${formatNumber(state.entries.length)} รายการ · ยอดรวม ${formatMoney(filteredTotal)}`
+    : `ทั้งหมด ${formatNumber(filteredEntries.length)} รายการ · ยอดรวม ${formatMoney(filteredTotal)}`;
 
   if (!state.entries.length) {
-    list.innerHTML = '<div class="empty-state"><strong>ยังไม่มีรายการบันทึก</strong>กรอกฟอร์มด้านบนเพื่อบันทึกรายการแรก</div>';
+    listContainer.innerHTML = '<div class="empty-state"><strong>ยังไม่มีรายการบันทึก</strong>กรอกฟอร์มด้านบนเพื่อบันทึกรายการแรก</div>';
     return;
   }
-  if (!entries.length) {
-    list.innerHTML = '<div class="empty-state"><strong>ไม่พบรายการ</strong>ลองเปลี่ยนช่วงวันที่หรือคำค้นหา</div>';
+  if (!filteredEntries.length) {
+    listContainer.innerHTML = '<div class="empty-state"><strong>ไม่พบรายการ</strong>ลองเปลี่ยนช่วงวันที่หรือคำค้นหา</div>';
     return;
   }
 
-  const sorted = entries.slice().sort((left, right) =>
-    (toIsoDate(right.date) || "").localeCompare(toIsoDate(left.date) || "") ||
-    String(right.docNo || "").localeCompare(String(left.docNo || ""), "th-TH", { numeric: true }));
-  const page = sorted.slice(0, visibleLimit);
-  const pageDebit = page.reduce((sum, entry) => sum + entry.lines.reduce((s, line) => s + (Number(line.debit) || 0), 0), 0);
-  const pageCredit = page.reduce((sum, entry) => sum + entry.lines.reduce((s, line) => s + (Number(line.credit) || 0), 0), 0);
+  // ล่าสุดอยู่บน: เรียงวันที่จากใหม่ไปเก่า แล้วตามเลขที่เอกสาร
+  const sortedEntries = filteredEntries.slice().sort((leftEntry, rightEntry) =>
+    (toIsoDate(rightEntry.date) || "").localeCompare(toIsoDate(leftEntry.date) || "")
+    || String(rightEntry.docNo || "").localeCompare(String(leftEntry.docNo || ""), "th-TH", { numeric: true }));
+  const visibleEntries = sortedEntries.slice(0, visibleEntryLimit);
+  const sumLines = (field) => visibleEntries.reduce(
+    (total, entry) => total + entry.lines.reduce((entryTotal, line) => entryTotal + (Number(line[field]) || 0), 0), 0);
+  const remainingCount = sortedEntries.length - visibleEntryLimit;
 
-  list.innerHTML = `<div class="table-wrap"><table class="gj-table">
-      <thead><tr><th class="col-date">วันที่</th><th style="width:140px">เลขที่</th><th>ชื่อบัญชีและคำอธิบาย</th><th class="col-code">เลขที่บัญชี</th><th class="right col-amt">เดบิต</th><th class="right col-amt">เครดิต</th><th class="col-act"></th></tr></thead>
-      ${page.map(renderEntry).join("")}
-      <tfoot><tr><th colspan="4">รวม ${fmtInt(page.length)} รายการที่แสดง</th><th class="right">${fmt(pageDebit)}</th><th class="right">${fmt(pageCredit)}</th><th></th></tr></tfoot>
+  listContainer.innerHTML = `<div class="table-wrap"><table class="journal-table">
+      <thead><tr><th class="col-date">วันที่</th><th style="width:140px">เลขที่</th><th>ชื่อบัญชีและคำอธิบาย</th><th class="col-code center">เลขที่บัญชี</th><th class="center col-amount">เดบิต</th><th class="center col-amount">เครดิต</th><th class="col-actions"></th></tr></thead>
+      ${visibleEntries.map(renderEntryRows).join("")}
+      <tfoot><tr><th colspan="4">รวม ${formatNumber(visibleEntries.length)} รายการที่แสดง</th><th class="right">${formatMoney(sumLines("debit"))}</th><th class="right">${formatMoney(sumLines("credit"))}</th><th></th></tr></tfoot>
     </table></div>
-    ${sorted.length > visibleLimit ? `<div class="load-more"><button type="button" class="secondary" id="journal-load-more">แสดงเพิ่ม (เหลืออีก ${fmtInt(sorted.length - visibleLimit)} รายการ)</button></div>` : ""}`;
+    ${remainingCount > 0 ? `<div class="load-more"><button type="button" class="secondary" id="journal-load-more">แสดงเพิ่ม (เหลืออีก ${formatNumber(remainingCount)} รายการ)</button></div>` : ""}`;
 
-  $("journal-load-more")?.addEventListener("click", () => {
-    visibleLimit += PAGE_SIZE * 2;
-    renderJournal();
+  byId("journal-load-more")?.addEventListener("click", () => {
+    visibleEntryLimit += ENTRIES_PER_PAGE * 2;
+    renderEntryList();
   });
 }
 
-$("journal-list").addEventListener("click", async (event) => {
-  const button = event.target.closest("button");
-  if (!button) return;
-  const findEntry = (id) => state.entries.find((item) => item.id === id);
-
-  if (button.dataset.editEntry || button.dataset.copyEntry || button.dataset.reverseEntry) {
-    const entry = findEntry(button.dataset.editEntry || button.dataset.copyEntry || button.dataset.reverseEntry);
-    if (!entry) return;
-    if (formDirty && !(await confirmAction("ฟอร์มมีข้อมูลที่ยังไม่บันทึก ต้องการแทนที่หรือไม่?", { title: "ข้อมูลยังไม่ถูกบันทึก", confirmText: "แทนที่", tone: "primary" }))) return;
-    fillForm(entry, { mode: button.dataset.editEntry ? "edit" : button.dataset.copyEntry ? "copy" : "reverse" });
+async function deleteEntry(entryId) {
+  const entry = state.entries.find((item) => item.id === entryId);
+  if (!entry) return;
+  if (isDateLocked(entry.date)) {
+    notifyError(getLockedPeriodMessage());
     return;
   }
+  const confirmMessage = `ยืนยันการลบรายการ ${entry.docNo || ""} ${entry.desc || ""}? (หากต้องการเก็บประวัติ แนะนำให้ใช้ “กลับรายการ” แทน)`;
+  if (!(await confirmDialog(confirmMessage.replace(/\s+/g, " ")))) return;
 
-  if (button.dataset.deleteEntry) {
-    const entryId = button.dataset.deleteEntry;
-    const entry = findEntry(entryId);
-    if (!entry) return;
-    if (isLocked(entry.date)) return toastError(lockMessage());
-    if (linkedSource(entry)) return toastError("รายการนี้สร้างอัตโนมัติ ลบได้ที่หน้าต้นทาง");
-    if (!(await confirmAction(`ยืนยันการลบรายการ ${entry?.docNo || ""} ${entry?.desc || ""}? (หากต้องการเก็บประวัติ แนะนำให้ใช้ “กลับรายการ” แทน)`.trim()))) return;
-    const previous = JSON.parse(JSON.stringify(state));
-    replaceState({ ...state, entries: state.entries.filter((item) => item.id !== entryId) });
-    if (!(await save(["entries"]))) {
-      replaceState(previous);
-      renderJournal();
-      return;
-    }
-    if (editingEntryId === entryId) resetForm();
-    renderJournal();
-    toastSuccess("ลบรายการบันทึกเรียบร้อย");
+  const isSaved = await commitChanges({ entries: state.entries.filter((item) => item.id !== entryId) });
+  if (isSaved && editingEntryId === entryId) resetForm();
+  renderEntryList();
+  if (isSaved) notifySuccess("ลบรายการบันทึกเรียบร้อย");
+}
+
+/** คลิกปุ่มในตาราง: แก้ไข / คัดลอก / กลับรายการ / ลบ */
+async function handleListClick(event) {
+  const button = event.target.closest("button");
+  if (!button) return;
+  if (button.hasAttribute("data-toggle-menu")) {
+    toggleMenu(button);
+    return;
   }
-});
+  closeAllMenus();
+  const { editEntry, copyEntry, reverseEntry, deleteEntry: deleteEntryId } = button.dataset;
 
-/* ---------- events ---------- */
-$("add-line").addEventListener("click", () => addLine({}, { focus: true }));
-$("balance-line").addEventListener("click", balanceLines);
-$("journal-entry-reset").addEventListener("click", async () => {
-  if (formDirty && !(await confirmAction("ล้างข้อมูลในฟอร์มทั้งหมด?", { title: "ล้างฟอร์ม", confirmText: "ล้าง" }))) return;
-  resetForm();
-});
-customerSelect.addEventListener("change", (event) => applyAutoDescription(event.target.value));
-dateInput.addEventListener("change", suggestDocNo);
-docNoInput.addEventListener("input", () => { docNoTouched = Boolean(docNoInput.value.trim()); });
-journalEntryForm.addEventListener("input", () => { formDirty = true; });
-cancelButton.addEventListener("click", () => {
-  resetForm();
-  toast("ยกเลิกการแก้ไขแล้ว");
-});
+  if (deleteEntryId) {
+    deleteEntry(deleteEntryId);
+    return;
+  }
+  const targetEntryId = editEntry || copyEntry || reverseEntry;
+  const entry = targetEntryId && state.entries.find((item) => item.id === targetEntryId);
+  if (!entry) return;
+  if (hasUnsavedChanges) {
+    const confirmed = await confirmDialog("ฟอร์มมีข้อมูลที่ยังไม่บันทึก ต้องการแทนที่หรือไม่?", { title: "ข้อมูลยังไม่ถูกบันทึก", confirmText: "แทนที่", tone: "primary" });
+    if (!confirmed) return;
+  }
+  let mode = "reverse";
+  if (editEntry) mode = "edit";
+  else if (copyEntry) mode = "copy";
+  fillFormFromEntry(entry, mode);
+}
 
-journalEntryForm.addEventListener("keydown", (event) => {
+/* ================================================================== */
+/* ตัวกรองและการส่งออก                                                    */
+/* ================================================================== */
+
+const filterInputs = {
+  from: byId("journal-entry-filter-start-date"),
+  to: byId("journal-entry-filter-end-date"),
+  searchText: byId("journal-entry-filter-text"),
+  kind: byId("journal-entry-filter-kind"),
+};
+
+/** ตัวเลือกเดือนของตัวกรองรายการ (สร้างหลังโหลดข้อมูล) */
+let monthFilter = null;
+
+function applyListFilters() {
+  listFilters.from = filterInputs.from.value;
+  listFilters.to = filterInputs.to.value;
+  listFilters.searchText = filterInputs.searchText.value.trim();
+  listFilters.kind = filterInputs.kind.value;
+  visibleEntryLimit = ENTRIES_PER_PAGE;
+  renderEntryList();
+  syncFormDateWithFilterMonth();
+}
+
+function filterCurrentMonth() {
+  const [year, month] = getTodayIso().split("-").map(Number);
+  filterInputs.from.value = formatIsoDate(new Date(year, month - 1, 1));
+  filterInputs.to.value = formatIsoDate(new Date(year, month, 0)); // วันสุดท้ายของเดือน
+  applyListFilters();
+}
+
+function clearListFilters() {
+  Object.values(filterInputs).forEach((input) => { input.value = ""; });
+  applyListFilters();
+}
+
+function exportCsv() {
+  const entries = getFilteredEntries();
+  if (!entries.length) {
+    notifyError("ไม่มีรายการให้ส่งออก");
+    return;
+  }
+  const headers = ["วันที่", "เลขที่เอกสาร", "ประเภท", "คำอธิบาย", "ลูกค้า", "ชื่อรายการ", "รหัสบัญชี", "ชื่อบัญชี", "เดบิต", "เครดิต"];
+  const rows = entries.flatMap((entry) => entry.lines.map((line) => {
+    const account = findAccountById(line.accountId);
+    return [
+      formatDate(entry.date), entry.docNo || "", ENTRY_KIND_LABELS[getEntryKind(entry)], entry.desc || "", entry.customerName || "", entry.itemName || "",
+      account?.code || "", account?.name || "(บัญชีถูกลบ)", Number(line.debit) || 0, Number(line.credit) || 0,
+    ];
+  }));
+  downloadCsv(`journal-${getFileDateStamp()}.csv`, buildCsv(headers, rows));
+  notifySuccess(`ส่งออก ${formatNumber(entries.length)} รายการ`);
+}
+
+/* ================================================================== */
+/* เลขที่เอกสารให้รายการเก่า                                               */
+/* ================================================================== */
+
+/** แถบแจ้งเตือน + ปุ่มสร้างเลขที่ให้รายการที่ยังไม่มีเลขที่เอกสาร */
+function renderMissingNumberBanner() {
+  byId("doc-number-banner")?.remove();
+  const missingCount = state.entries.filter((entry) => !entry.docNo).length;
+  if (!missingCount) return;
+
+  document.querySelector(".section-head").insertAdjacentHTML("beforebegin", `<div class="banner info" id="doc-number-banner">
+    <span>มี <strong>${formatNumber(missingCount)}</strong> รายการที่ยังไม่มีเลขที่เอกสาร</span>
+    <button type="button" class="small" id="doc-number-fill" style="margin-left:auto">สร้างเลขที่ให้อัตโนมัติ</button>
+  </div>`);
+  byId("doc-number-fill").addEventListener("click", () => assignMissingDocumentNumbers(missingCount));
+}
+
+async function assignMissingDocumentNumbers(missingCount) {
+  const confirmed = await confirmDialog(
+    `สร้างเลขที่เอกสาร JV-ปีเดือน-ลำดับ ให้ ${formatNumber(missingCount)} รายการตามลำดับวันที่?`,
+    { title: "สร้างเลขที่เอกสาร", confirmText: "สร้างเลขที่", tone: "primary" },
+  );
+  if (!confirmed) return;
+
+  const entries = state.entries.map((entry) => ({ ...entry }));
+  const reservedNumbers = new Set();
+  entries
+    .filter((entry) => !entry.docNo)
+    .sort((leftEntry, rightEntry) => (toIsoDate(leftEntry.date) || "").localeCompare(toIsoDate(rightEntry.date) || ""))
+    .forEach((entry) => { entry.docNo = createDocumentNumber(entries, "JV", entry.date, entry.id, reservedNumbers); });
+
+  if (!(await commitChanges({ entries }))) return;
+  renderEntryList();
+  renderMissingNumberBanner();
+  suggestDocumentNumber();
+  notifySuccess(`สร้างเลขที่เอกสาร ${formatNumber(missingCount)} รายการเรียบร้อย`);
+}
+
+/* ================================================================== */
+/* ผูกอีเวนต์                                                            */
+/* ================================================================== */
+
+/** ลิงก์ "#new" (จากเมนู/แดชบอร์ด): เลื่อนไปที่ฟอร์มและโฟกัสช่องวันที่ */
+function focusFormIfRequested() {
+  if (location.hash !== "#new") return;
+  entryForm.scrollIntoView({ block: "start" });
+  dateInput.focus();
+  history.replaceState(null, "", location.pathname);
+}
+
+async function handleResetClick() {
+  if (hasUnsavedChanges && !(await confirmDialog("ล้างข้อมูลในฟอร์มทั้งหมด?", { title: "ล้างฟอร์ม", confirmText: "ล้าง" }))) return;
+  resetForm();
+}
+
+/** คีย์ลัด: Ctrl/⌘ + Enter = บันทึก, Alt + N = เพิ่มบรรทัด */
+function handleFormShortcuts(event) {
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
     event.preventDefault();
-    journalEntryForm.requestSubmit();
-  } else if (event.altKey && (event.key === "n" || event.key === "N")) {
+    entryForm.requestSubmit();
+  } else if (event.altKey && event.key.toLowerCase() === "n") {
     event.preventDefault();
     addLine({}, { focus: true });
   }
-});
-
-window.addEventListener("beforeunload", (event) => {
-  if (!formDirty) return;
-  event.preventDefault();
-  event.returnValue = "";
-});
-
-journalEntryForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  errorElement.textContent = "";
-  if (!dateInput.value) {
-    errorElement.textContent = "กรุณาระบุวันที่";
-    dateInput.focus();
-    return;
-  }
-  const original = editingEntryId ? state.entries.find((entry) => entry.id === editingEntryId) : null;
-  if (isLocked(dateInput.value) || (original && isLocked(original.date))) {
-    errorElement.textContent = lockMessage();
-    dateInput.focus();
-    return;
-  }
-  if (!descInput.value.trim()) {
-    errorElement.textContent = "กรุณาระบุคำอธิบายรายการ";
-    descInput.focus();
-    return;
-  }
-  const lines = [];
-  for (const row of lineRows()) {
-    const accountId = row.querySelector(".je-account").value;
-    const debit = readAmount(row.querySelector(".je-debit"));
-    const credit = readAmount(row.querySelector(".je-credit"));
-    if (!debit && !credit) continue;
-    if (!accountId) {
-      errorElement.textContent = "มีบรรทัดที่กรอกจำนวนเงินแต่ยังไม่ได้เลือกบัญชี";
-      row.querySelector(".je-account").focus();
-      return;
-    }
-    if (debit < 0 || credit < 0) {
-      errorElement.textContent = "จำนวนเงินต้องไม่ติดลบ";
-      return;
-    }
-    if (debit > 0 && credit > 0) {
-      errorElement.textContent = "แต่ละบรรทัดใส่ได้เฉพาะเดบิตหรือเครดิตอย่างใดอย่างหนึ่ง";
-      return;
-    }
-    lines.push({ accountId, debit, credit });
-  }
-  if (lines.length < 2) {
-    errorElement.textContent = "ต้องมีอย่างน้อย 2 บรรทัดที่มีจำนวนเงิน";
-    return;
-  }
-  if (!lines.some((line) => line.debit > 0) || !lines.some((line) => line.credit > 0)) {
-    errorElement.textContent = "ต้องมีทั้งด้านเดบิตและด้านเครดิต";
-    return;
-  }
-  if (!updateTotals()) {
-    errorElement.textContent = "ยอดเดบิตและเครดิตต้องเท่ากัน — กด “ปรับยอดให้ดุล” หรือแก้ไขจำนวนเงิน";
-    return;
-  }
-
-  const docNo = docNoInput.value.trim() || nextDocNo(dateInput.value, editingEntryId || "");
-  if (state.entries.some((entry) => entry.docNo === docNo && entry.id !== editingEntryId)) {
-    errorElement.textContent = `เลขที่เอกสาร ${docNo} ถูกใช้แล้ว`;
-    docNoInput.focus();
-    return;
-  }
-
-  const { customerId, customerName } = resolveCustomer(customerSelect.value);
-  const payload = {
-    date: dateInput.value,
-    docNo,
-    kind: kindSelect.value || "general",
-    desc: descInput.value.trim(),
-    lines,
-  };
-  if (customerId) payload.customerId = customerId;
-  if (customerName) payload.customerName = customerName;
-  const previous = JSON.parse(JSON.stringify(state));
-  const entries = state.entries.slice();
-  const isEdit = Boolean(editingEntryId);
-  if (isEdit) {
-    const index = entries.findIndex((existingEntry) => existingEntry.id === editingEntryId);
-    if (index < 0) return resetForm();
-    const updated = { ...entries[index], ...payload, updatedAt: new Date().toISOString() };
-    if (!customerId) delete updated.customerId;
-    if (!customerName) delete updated.customerName;
-    entries[index] = updated;
-  } else {
-    entries.push({ id: uid(), ...payload, createdAt: new Date().toISOString() });
-  }
-  entries.sort((earlierEntry, laterEntry) => (toIsoDate(earlierEntry.date) || "").localeCompare(toIsoDate(laterEntry.date) || "") || String(earlierEntry.id).localeCompare(String(laterEntry.id)));
-  submitButton.disabled = true;
-  replaceState({ ...state, entries });
-  const saved = await save(["entries"]);
-  submitButton.disabled = false;
-  if (!saved) {
-    replaceState(previous);
-    renderJournal();
-    return;
-  }
-  resetForm({ keepDate: true });
-  renderJournal();
-  toastSuccess(isEdit ? `แก้ไขรายการ ${docNo} เรียบร้อย` : `บันทึกรายการ ${docNo} เรียบร้อย`);
-  descInput.focus();
-});
-
-/* ---------- filters & export ---------- */
-function applyFilters() {
-  filters.from = $("journal-entry-filter-start-date").value;
-  filters.to = $("journal-entry-filter-end-date").value;
-  filters.text = $("journal-entry-filter-text").value.trim();
-  filters.kind = $("journal-entry-filter-kind").value;
-  visibleLimit = PAGE_SIZE;
-  renderJournal();
 }
-$("journal-entry-filter-start-date").addEventListener("change", applyFilters);
-$("journal-entry-filter-end-date").addEventListener("change", applyFilters);
-$("journal-entry-filter-kind").addEventListener("change", applyFilters);
-$("journal-entry-filter-text").addEventListener("input", debounce(applyFilters, 180));
-$("journal-entry-filter-month").addEventListener("click", () => {
-  const today = todayIso();
-  const [year, month] = today.split("-").map(Number);
-  const lastDay = new Date(year, month, 0).getDate();
-  $("journal-entry-filter-start-date").value = `${today.slice(0, 7)}-01`;
-  $("journal-entry-filter-end-date").value = `${today.slice(0, 7)}-${String(lastDay).padStart(2, "0")}`;
-  applyFilters();
-});
-$("journal-entry-filter-clear").addEventListener("click", () => {
-  $("journal-entry-filter-start-date").value = "";
-  $("journal-entry-filter-end-date").value = "";
-  $("journal-entry-filter-text").value = "";
-  $("journal-entry-filter-kind").value = "";
-  applyFilters();
-});
-$("journal-entry-export").addEventListener("click", () => {
-  const entries = visibleEntries();
-  if (!entries.length) return toastError("ไม่มีรายการให้ส่งออก");
-  const rows = [];
-  entries.forEach((entry) => entry.lines.forEach((line) => {
-    const account = getAccount(line.accountId);
-    rows.push([fmtDateDMY(entry.date), entry.docNo || "", ENTRY_KINDS[entryKind(entry)], entry.desc || "", entry.customerName || "", account?.code || "", account?.name || "(บัญชีถูกลบ)", Number(line.debit) || 0, Number(line.credit) || 0]);
-  }));
-  downloadCsvFile(`journal-${fileStamp()}.csv`, toCsv(["วันที่", "เลขที่เอกสาร", "ประเภท", "คำอธิบาย", "ลูกค้า", "รหัสบัญชี", "ชื่อบัญชี", "เดบิต", "เครดิต"], rows));
-  toastSuccess(`ส่งออก ${fmtInt(entries.length)} รายการ`);
-});
 
-function handleHash() {
-  if (location.hash === "#new") {
-    journalEntryForm.scrollIntoView({ block: "start" });
-    dateInput.focus();
-    history.replaceState(null, "", location.pathname);
+byId("add-line").addEventListener("click", () => addLine({}, { focus: true }));
+byId("balance-line").addEventListener("click", fillBalancingAmount);
+byId("journal-entry-reset").addEventListener("click", handleResetClick);
+byId("journal-list").addEventListener("click", handleListClick);
+byId("journal-entry-export").addEventListener("click", exportCsv);
+byId("journal-entry-filter-month").addEventListener("click", filterCurrentMonth);
+byId("journal-entry-filter-clear").addEventListener("click", clearListFilters);
+filterInputs.from.addEventListener("change", applyListFilters);
+filterInputs.to.addEventListener("change", applyListFilters);
+filterInputs.kind.addEventListener("change", applyListFilters);
+filterInputs.searchText.addEventListener("input", debounce(applyListFilters, 180));
+
+// ระหว่างพิมพ์ชื่อ: ชื่อตรงกับรายการ → เลือกประเภทให้ทันที
+partyInput.addEventListener("input", () => autoDetectPartyType(false));
+// พิมพ์ชื่อคู่ค้าเองจนครบแล้วออกจากช่อง → ตั้ง/บังคับเลือกประเภท แล้วตรวจแม่แบบคำอธิบายอัตโนมัติ
+partyInput.addEventListener("change", () => {
+  autoDetectPartyType(true);
+  applyAutoDescription(resolvePartyInput());
+});
+autoMirrorSwitch.addEventListener("change", () => {
+  try {
+    localStorage.setItem(AUTO_MIRROR_STORAGE_KEY, autoMirrorSwitch.checked ? "1" : "0");
+  } catch {
+    // บันทึกไม่ได้ก็ไม่เป็นไร สวิตช์ยังใช้ได้ในหน้านี้
   }
-}
-window.addEventListener("hashchange", handleHash);
-
-if (await load(["entries", "accounts", "customers", "customerNames", "autoDesc"])) {
-  cachedAccountOptions = accountOptionsHtml();
-  renderCustomerOptions();
+  if (autoMirrorSwitch.checked) mirrorAllPairs();
+  updateBalanceStatus();
+});
+// คลิกที่อื่น / เลื่อนหน้า / กด Esc = ปิดเมนู "⋯"
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".more-menu")) closeAllMenus();
+});
+window.addEventListener("scroll", closeAllMenus, true);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeAllMenus();
+});
+// "input" = เปลี่ยนทันทีที่เลือกจากปฏิทิน, "change" = กันเบราว์เซอร์ที่ไม่ส่ง input
+dateInput.addEventListener("input", suggestDocumentNumber);
+dateInput.addEventListener("change", suggestDocumentNumber);
+documentNumberInput.addEventListener("input", () => { isDocumentNumberManual = Boolean(documentNumberInput.value.trim()); });
+entryForm.addEventListener("input", () => { hasUnsavedChanges = true; });
+entryForm.addEventListener("keydown", handleFormShortcuts);
+entryForm.addEventListener("submit", handleFormSubmit);
+cancelEditButton.addEventListener("click", () => {
   resetForm();
-  renderJournal();
-  handleHash();
-  if (!state.accounts.length) {
-    journalEntryForm.insertAdjacentHTML("afterbegin", '<div class="banner warn">ยังไม่มีผังบัญชี — <a href="../accounts/accounts.html">สร้างผังบัญชี</a> ก่อนบันทึกรายการ</div>');
-  }
-  renderDocNoBanner();
-  onDataRefresh(() => {
-    cachedAccountOptions = accountOptionsHtml();
-    renderCustomerOptions();
-    renderJournal();
-    renderDocNoBanner();
-  });
-}
+  notify("ยกเลิกการแก้ไขแล้ว");
+});
+window.addEventListener("hashchange", focusFormIfRequested);
+window.addEventListener("beforeunload", (event) => {
+  // preventDefault() ทำให้เบราว์เซอร์แสดงกล่องยืนยันก่อนออกจากหน้า
+  if (hasUnsavedChanges) event.preventDefault();
+});
 
-/* ---------- document numbers for older entries ---------- */
-function renderDocNoBanner() {
-  document.getElementById("docno-banner")?.remove();
-  const missing = state.entries.filter((entry) => !entry.docNo).length;
-  if (!missing) return;
-  document.querySelector(".section-head").insertAdjacentHTML("beforebegin",
-    `<div class="banner info" id="docno-banner"><span>มี <strong>${fmtInt(missing)}</strong> รายการที่ยังไม่มีเลขที่เอกสาร</span><button type="button" class="small" id="docno-fill" style="margin-left:auto">สร้างเลขที่ให้อัตโนมัติ</button></div>`);
-  $("docno-fill").addEventListener("click", async () => {
-    if (!(await confirmAction(`สร้างเลขที่เอกสาร JV-ปีเดือน-ลำดับ ให้ ${fmtInt(missing)} รายการตามลำดับวันที่?`, { title: "สร้างเลขที่เอกสาร", confirmText: "สร้างเลขที่", tone: "primary" }))) return;
-    const previous = JSON.parse(JSON.stringify(state));
-    const entries = state.entries.map((entry) => ({ ...entry }));
-    const reserved = new Set();
-    entries
-      .filter((entry) => !entry.docNo)
-      .sort((left, right) => (toIsoDate(left.date) || "").localeCompare(toIsoDate(right.date) || ""))
-      .forEach((entry) => { entry.docNo = nextSeqNo(entries, "JV", entry.date, entry.id, reserved); });
-    replaceState({ ...state, entries });
-    if (!(await save(["entries"]))) {
-      replaceState(previous);
-      return;
-    }
-    renderJournal();
-    renderDocNoBanner();
-    suggestDocNo();
-    toastSuccess(`สร้างเลขที่เอกสาร ${fmtInt(missing)} รายการเรียบร้อย`);
+/* ================================================================== */
+/* เริ่มต้นหน้า                                                            */
+/* ================================================================== */
+
+if (await loadData(["entries", "accounts", "customers", "suppliers", "customerNames", "autoDesc"])) {
+  accountOptionsHtml = renderAccountOptions();
+  try {
+    autoMirrorSwitch.checked = localStorage.getItem(AUTO_MIRROR_STORAGE_KEY) === "1";
+  } catch {
+    autoMirrorSwitch.checked = false;
+  }
+  resetForm();
+  // ตัวเลือกเดือนของรายการที่บันทึกแล้ว (ตั้งช่วง ตั้งแต่–ถึง ให้ทั้งเดือน)
+  monthFilter = createMonthFilter({
+    fromInput: filterInputs.from,
+    toInput: filterInputs.to,
+    getRecords: () => state.entries,
+    onSelect: applyListFilters,
+  });
+  // ลิงก์จากหน้าอื่น เช่น journal.html?q=JV-202611-0001 → ค้นหารายการนั้นให้
+  const searchQuery = new URLSearchParams(location.search).get("q");
+  if (searchQuery) {
+    filterInputs.searchText.value = searchQuery;
+  } else {
+    // ค่าเริ่มต้น: แสดงเดือนล่าสุดที่มีรายการ (ถ้ามาจากลิงก์ค้นหา ไม่จำกัดเดือน เพื่อให้เจอรายการนั้นแน่นอน)
+    // เดือนที่เลือกไว้ในหน้าอื่น (ถ้ามี) ไม่เช่นนั้นเดือนล่าสุดที่มีรายการ
+  const latestMonth = getInitialMonthRange(state.entries);
+    filterInputs.from.value = latestMonth.from;
+    filterInputs.to.value = latestMonth.to;
+  }
+  applyListFilters();
+  renderEntryList();
+  renderMissingNumberBanner();
+  focusFormIfRequested();
+  if (!state.accounts.length) {
+    entryForm.insertAdjacentHTML("afterbegin", '<div class="banner warn">ยังไม่มีผังบัญชี — <a href="../accounts/accounts.html">สร้างผังบัญชี</a> ก่อนบันทึกรายการ</div>');
+  }
+  onDataRefresh(() => {
+    accountOptionsHtml = renderAccountOptions();
+    monthFilter.refresh();
+    renderEntryList();
+    renderMissingNumberBanner();
   });
 }

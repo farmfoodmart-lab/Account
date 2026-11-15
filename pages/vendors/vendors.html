@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>รายชื่อซัพพลายเออร์ · ระบบบัญชีคู่</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../../src/styles/main.css">
+  <link rel="modulepreload" href="../../src/core/store.js">
+  <script src="../../src/components/theme.js"></script>
+</head>
+<body>
+  <script src="../../src/components/app-shell.js"></script>
+  <script src="../../src/components/date-input.js" defer></script>
+  <main id="main">
+    <div class="page-head">
+      <div><h2>รายชื่อซัพพลายเออร์</h2><p class="page-sub">ทะเบียนผู้ขาย / ซัพพลายเออร์ (เจ้าหนี้) และชื่อที่เคยบันทึกในสมุดรายวัน พร้อมยอดค้างชำระ — ใช้เลือกเป็นคู่ค้าในสมุดรายวัน ทะเบียนเจ้าหนี้ และรายงานภาษีซื้อ</p></div>
+      <div class="page-actions"><button type="button" id="vendors-export" class="secondary">ส่งออก CSV</button></div>
+    </div>
+    <div id="vendors-summary" class="cards"></div>
+    <form id="supplier-form" class="card" autocomplete="off">
+      <div class="form-title"><h3>เพิ่มซัพพลายเออร์</h3></div>
+      <div class="form-grid">
+        <label class="field"><span class="req">รหัสซัพพลายเออร์</span><input type="text" id="supplier-code" placeholder="เช่น S001" required></label>
+        <label class="field span-2"><span class="req">ชื่อซัพพลายเออร์ / บริษัท</span><input type="text" id="supplier-name" placeholder="ชื่อผู้ขาย" required></label>
+        <label class="field"><span>ผู้ติดต่อ</span><input type="text" id="supplier-contact" placeholder="ชื่อผู้ติดต่อ"></label>
+        <label class="field"><span>โทรศัพท์</span><input type="text" id="supplier-phone" placeholder="0x-xxx-xxxx"></label>
+        <label class="field"><span>เลขประจำตัวผู้เสียภาษี</span><input type="text" id="supplier-tax-id" placeholder="13 หลัก" inputmode="numeric"></label>
+        <label class="field"><span>เครดิตเทอม (วัน)</span><input type="number" id="supplier-credit-days" min="0" step="1" placeholder="ตามค่าในการตั้งค่า" title="ใช้คำนวณวันครบกำหนดชำระในทะเบียนเจ้าหนี้ เมื่อรายการไม่ได้ระบุวันครบกำหนด"></label>
+        <label class="field span-2"><span>ที่อยู่</span><input type="text" id="supplier-address" placeholder="ที่อยู่สำหรับออกเอกสาร"></label>
+      </div>
+      <div class="form-actions"><button type="reset" id="supplier-reset" class="secondary">ล้าง</button><button type="submit" id="supplier-submit">เพิ่มซัพพลายเออร์</button></div>
+    </form>
+    <div id="supplier-code-banner-slot"></div>
+    <div class="filter-bar">
+      <label>สถานะ <select id="vendors-status">
+        <option value="">ทั้งหมด</option>
+        <option value="registered">อยู่ในทะเบียน</option>
+        <option value="unregistered">ยังไม่อยู่ในทะเบียน</option>
+        <option value="outstanding">มียอดค้างชำระ</option>
+      </select></label>
+      <label class="grow">ค้นหา <input type="search" id="vendors-search" placeholder="รหัส / ชื่อ / ผู้ติดต่อ / เลขผู้เสียภาษี / โทรศัพท์"></label>
+    </div>
+    <p class="table-meta" id="vendors-count"></p>
+    <div class="table-wrap tall"><table id="vendors-table">
+      <thead><tr><th class="col-code">รหัส</th><th>ชื่อ</th><th>ผู้ติดต่อ</th><th>โทรศัพท์</th><th>เลขผู้เสียภาษี</th><th class="right">เครดิตเทอม</th><th class="right">รายการ</th><th class="col-date">ล่าสุด</th><th class="right col-amount">ค้างชำระ</th><th class="col-actions"></th></tr></thead>
+      <tbody><tr><td colspan="10"><div class="skeleton"></div></td></tr></tbody>
+    </table></div>
+  </main>
+  <script type="module" src="vendors.js"></script>
+</body>
+</html>

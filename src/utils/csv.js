@@ -1,9 +1,14 @@
 /**
- * Minimal CSV serialisation — enough for Excel-compatible exports.
+ * @file สร้างข้อความ CSV สำหรับส่งออกไปเปิดใน Excel
  */
 
-function csvCell(value) {
-  const text = value == null ? '' : String(value);
+/**
+ * ครอบค่าด้วยเครื่องหมายคำพูด เมื่อค่ามีจุลภาค เครื่องหมายคำพูด หรือการขึ้นบรรทัดใหม่
+ * @param {unknown} value
+ * @returns {string}
+ */
+function toCsvCell(value) {
+  const text = value == null ? "" : String(value);
   if (/[",\r\n]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
   }
@@ -11,11 +16,13 @@ function csvCell(value) {
 }
 
 /**
- * @param {Array<string>} header
- * @param {Array<Array<string|number|null>>} rows
+ * รวมหัวตารางและแถวข้อมูลเป็นข้อความ CSV
+ * @param {string[]} headers หัวคอลัมน์
+ * @param {Array<Array<unknown>>} rows แถวข้อมูล
  * @returns {string}
  */
-export function toCsv(header, rows) {
-  const lines = [header, ...rows].map((cells) => cells.map(csvCell).join(','));
-  return lines.join('\r\n');
+export function buildCsv(headers, rows) {
+  return [headers, ...rows]
+    .map((cells) => cells.map(toCsvCell).join(","))
+    .join("\r\n");
 }

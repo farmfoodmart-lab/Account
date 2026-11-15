@@ -7,21 +7,24 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="../../style.css">
-  <link rel="modulepreload" href="../../js/data.js">
-  <script src="../../js/theme.js"></script>
+  <link rel="stylesheet" href="../../src/styles/main.css">
+  <link rel="modulepreload" href="../../src/core/store.js">
+  <script src="../../src/components/theme.js"></script>
 </head>
 <body>
-  <script src="../../js/shell.js"></script>
+  <script src="../../src/components/app-shell.js"></script>
+  <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
       <div><h2>งบทดลอง</h2><p class="page-sub">ตรวจสอบความถูกต้องของการบันทึกบัญชี ยอดรวมด้านเดบิตต้องเท่ากับด้านเครดิต</p></div>
       <div class="page-actions"><button type="button" id="trial-export" class="secondary">ส่งออก CSV</button><button type="button" class="secondary" onclick="window.print()">พิมพ์</button></div>
     </div>
     <div class="filter-bar">
-      <label>ณ วันที่ <input type="date" id="trial-to"></label>
+      <label>ตั้งแต่ <input type="date" id="trial-from" title="รายได้/ค่าใช้จ่ายนับเฉพาะตั้งแต่วันนี้ · เว้นว่าง = ทุกรายการ"></label>
+      <label>ถึง <input type="date" id="trial-to"></label>
+      <label class="check" title="ไม่ติ๊ก = ยอดคงเหลือนับเฉพาะรายการในช่วงที่เลือก"><input type="checkbox" id="trial-include-opening"> รวมยอดยกมา</label>
       <label class="check"><input type="checkbox" id="trial-group" checked> จัดกลุ่มตามหมวดบัญชี</label>
-      <label class="check"><input type="checkbox" id="trial-movement"> แสดงยอดเคลื่อนไหวรวม</label>
+      <label class="check"><input type="checkbox" id="trial-movement" checked> แสดงยอดเคลื่อนไหวรวม</label>
     </div>
     <div id="trial-view"><div class="skeleton"></div></div>
   </main>
