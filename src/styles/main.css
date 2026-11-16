@@ -193,6 +193,7 @@ body.app {
   font-weight: 700;
   font-size: 1.05rem;
 }
+img.brand-mark { display: block; background: none; object-fit: contain; transform: scale(1.14); }
 .brand-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
 .brand-text strong { font-size: 0.98rem; }
 .brand-text small { overflow: hidden; color: var(--muted); font-size: 0.76rem; text-overflow: ellipsis; white-space: nowrap; }

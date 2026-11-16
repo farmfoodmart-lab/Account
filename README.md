@@ -6,7 +6,7 @@
 ## การเปิดใช้งาน
 
 ต้องเปิดผ่าน web server (เปิดไฟล์ตรง ๆ แบบ `file://` ไม่ได้ เพราะใช้ ES Modules) เช่น
-VS Code Live Server หรือ `npx serve .` แล้วเปิด `index.html`
+VS Code Live Server หรือ `npx serve .` แล้วเปิด `Accounting.html`
 
 ก่อนใช้งานจริงครั้งแรก:
 1. Firebase Console → Authentication → Sign-in method → เปิด **Email/Password** และ **Google**
@@ -15,7 +15,7 @@ VS Code Live Server หรือ `npx serve .` แล้วเปิด `index.h
 ## โครงสร้างโฟลเดอร์
 
 ```
-index.html                  หน้าแรก (พาไปแดชบอร์ด)
+Accounting.html             หน้าแรก (พาไปแดชบอร์ด)
 firestore.rules             กฎความปลอดภัยของ Firestore
 pages/                      หน้าเว็บ หนึ่งโฟลเดอร์ต่อหนึ่งหน้า: <ชื่อ>/<ชื่อ>.html + <ชื่อ>.js
 src/

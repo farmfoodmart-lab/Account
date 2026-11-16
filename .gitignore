@@ -1,2 +1,6 @@
 node_modules/
 npm-debug.log*
+
+# Windows: ไอคอนโฟลเดอร์และ shortcut ในเครื่อง
+desktop.ini
+*.lnk
