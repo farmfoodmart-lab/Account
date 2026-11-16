@@ -15,6 +15,13 @@ import { escapeHtml, formatNumber } from "../utils/format.js";
  */
 const IMPORT_FILE_TYPES = {
   customer_names: { label: "รายชื่อลูกค้า", collection: "customerNames" },
+  supplier_names: {
+    label: "รายชื่อซัพพลายเออร์",
+    collection: "suppliers",
+    // ซัพพลายเออร์ที่มีรายการในสมุดรายวัน/แม่แบบอ้างอิงแล้ว ห้ามลบ (รายการจะไม่มีคู่ค้า) → เก็บไว้ในทะเบียน
+    keep: (supplier) => state.entries.some((entry) => entry.customerId === supplier.id)
+      || state.autoDesc.some((rule) => rule.customerId === supplier.id),
+  },
   customer_costs: { label: "รายชื่อลูกค้าพร้อมต้นทุน", collection: "customerCosts" },
   incoming_docs: { label: "เอกสารรับเข้า", collection: "incomingDocs" },
 };
@@ -57,15 +64,25 @@ export function renderImportedFileList(containerId, fileTypeFilter, onFilesChang
         notifyError(`ไฟล์นี้มีรายการบัญชีในงวดที่ปิดแล้ว จึงลบไม่ได้ — ${getLockedPeriodMessage()}`);
         return;
       }
+      // ไฟล์ประเภทที่ไม่รู้จัก (เช่นจากรุ่นเก่า) ลบเฉพาะรายการไฟล์ออกจากรายการ
+      const fileType = IMPORT_FILE_TYPES[importedFile.type];
+      const keptRecords = fileType && fileType.keep
+        ? state[fileType.collection].filter((record) => record.fileId === fileId && fileType.keep(record))
+        : [];
       const linkedText = linkedEntries.length ? ` รวมถึงรายการในสมุดรายวัน ${formatNumber(linkedEntries.length)} รายการ` : "";
-      if (!(await confirmDialog(`ยืนยันการลบไฟล์ "${importedFile.name}" และข้อมูลทั้งหมดที่นำเข้าจากไฟล์นี้${linkedText}?`))) return;
+      const keptText = keptRecords.length
+        ? `\n• ${formatNumber(keptRecords.length)} รายชื่อที่มีรายการบัญชีอ้างอิงอยู่จะยังคงอยู่ในทะเบียน`
+        : "";
+      if (!(await confirmDialog(`ยืนยันการลบไฟล์ "${importedFile.name}" และข้อมูลทั้งหมดที่นำเข้าจากไฟล์นี้${linkedText}?${keptText}`))) return;
 
       const changes = { importFiles: state.importFiles.filter((file) => file.id !== fileId) };
       if (linkedEntries.length) changes.entries = state.entries.filter((entry) => entry.fileId !== fileId);
-      // ไฟล์ประเภทที่ไม่รู้จัก (เช่นจากรุ่นเก่า) ลบเฉพาะรายการไฟล์ออกจากรายการ
-      const fileType = IMPORT_FILE_TYPES[importedFile.type];
       if (fileType) {
-        changes[fileType.collection] = state[fileType.collection].filter((record) => record.fileId !== fileId);
+        const keptIds = new Set(keptRecords.map((record) => record.id));
+        changes[fileType.collection] = state[fileType.collection]
+          .filter((record) => record.fileId !== fileId || keptIds.has(record.id))
+          // ที่เก็บไว้ไม่ผูกกับไฟล์แล้ว (กลายเป็นรายชื่อปกติในทะเบียน)
+          .map((record) => (keptIds.has(record.id) ? (({ fileId: _fileId, ...rest }) => rest)(record) : record));
       }
 
       // commitChanges เปลี่ยน state ทันที → วาดใหม่ให้รายการหายไปก่อน แล้วจึงรอบันทึกบนเซิร์ฟเวอร์

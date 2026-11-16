@@ -10,7 +10,13 @@
  */
 import { commitChanges, loadData, state } from "../../src/core/store.js";
 import { ACCOUNT_TYPE_LABELS, AMOUNT_EPSILON } from "../../src/accounting/constants.js";
-import { createCustomerCodes, parseCustomerOptionValue, resolvePartyText } from "../../src/accounting/customers.js";
+import {
+  createCustomerCodes,
+  createSupplierCodes,
+  normalizeSupplierCode,
+  parseCustomerOptionValue,
+  resolvePartyText,
+} from "../../src/accounting/customers.js";
 import { createDocumentNumber, isDateLocked } from "../../src/accounting/journal.js";
 import { buildCreditSaleWithCostLines } from "../../src/accounting/posting.js";
 import { notifyError, notifySuccess } from "../../src/components/notifications.js";
@@ -71,6 +77,52 @@ function parseCustomerNames(rows, fileId) {
   const generatedCodes = createCustomerCodes(names.filter((row) => !row.code).length);
   const newRecords = names.map((row) => ({ code: row.code || generatedCodes.shift(), name: row.name, fileId }));
   return { changes: { customerNames: [...state.customerNames, ...newRecords] }, importedCount: newRecords.length };
+}
+
+/**
+ * รายชื่อซัพพลายเออร์ → เพิ่มเข้าทะเบียนซัพพลายเออร์ (state.suppliers)
+ * - คอลัมน์ "ชื่อซัพพลายเออร์" (จำเป็น), รหัส/ผู้ติดต่อ/โทรศัพท์/เลขผู้เสียภาษี/ที่อยู่ (ว่างได้)
+ * - ชื่อที่มีในทะเบียนแล้ว หรือซ้ำกันในไฟล์ → ข้าม
+ * - ไม่มีรหัส หรือรหัสซ้ำกับที่มีอยู่ → สร้างรหัสต่อจากรหัสล่าสุด (S001, S002, ...)
+ */
+function parseSupplierNames(rows, fileId) {
+  const toKey = (name) => name.replace(/\s+/g, " ").trim().toLowerCase();
+  const knownNames = new Set(state.suppliers.map((supplier) => toKey(supplier.name || "")));
+  const usedCodes = new Set([...state.suppliers, ...state.customers, ...state.customerNames].map((record) => record.code).filter(Boolean));
+  const newSuppliers = [];
+  let skippedDuplicateCount = 0;
+  rows.forEach((row) => {
+    const name = readText(row, ["ชื่อซัพพลายเออร์", "ซัพพลายเออร์", "ชื่อผู้ขาย", "ชื่อ", "supplier", "Supplier", "name", "Name"])
+      .replace(/\s+/g, " ");
+    if (!name) return;
+    if (knownNames.has(toKey(name))) {
+      skippedDuplicateCount += 1;
+      return;
+    }
+    knownNames.add(toKey(name));
+    let code = normalizeSupplierCode(readText(row, ["รหัสซัพพลายเออร์", "รหัส", "code", "Code"]));
+    if (code && usedCodes.has(code)) code = "";
+    if (code) usedCodes.add(code);
+    newSuppliers.push({
+      id: createId(),
+      code,
+      name,
+      contact: readText(row, ["ผู้ติดต่อ", "contact"]),
+      phone: readText(row, ["โทรศัพท์", "phone"]),
+      tax: readText(row, ["เลขผู้เสียภาษี", "เลขประจำตัวผู้เสียภาษี", "tax"]),
+      address: readText(row, ["ที่อยู่", "address"]),
+      fileId,
+    });
+  });
+  // สร้างรหัสให้แถวที่ไม่มีรหัส (นับต่อจากรหัสในทะเบียนและรหัสที่มากับไฟล์)
+  const withoutCode = newSuppliers.filter((supplier) => !supplier.code);
+  const generatedCodes = createSupplierCodes(withoutCode.length, newSuppliers.filter((supplier) => supplier.code));
+  withoutCode.forEach((supplier) => { supplier.code = generatedCodes.shift(); });
+  return {
+    changes: { suppliers: [...state.suppliers, ...newSuppliers] },
+    importedCount: newSuppliers.length,
+    skippedDuplicateCount,
+  };
 }
 
 /**
@@ -277,6 +329,7 @@ function parseJournalEntries(rows) {
  */
 const IMPORT_TYPES = {
   customer_names: { requiredColumns: ["ชื่อลูกค้า", "รหัสลูกค้า (ว่างได้ ระบบสร้างให้)"], tracksFile: true, parse: parseCustomerNames },
+  supplier_names: { requiredColumns: ["ชื่อซัพพลายเออร์", "รหัสซัพพลายเออร์ (ว่างได้ ระบบสร้างให้)", "ผู้ติดต่อ / โทรศัพท์ / เลขผู้เสียภาษี / ที่อยู่ (ว่างได้)"], tracksFile: true, parse: parseSupplierNames },
   customer_costs: { requiredColumns: ["วันที่", "ชื่อลูกค้า", "ราคาทุน", "ราคาขาย"], tracksFile: true, parse: parseCustomerCosts, postsEntries: true },
   incoming_docs: { requiredColumns: ["วันที่", "ประเภทเอกสาร", "ซัพพลายเออร์", "ยอดรวม", "ส่วนลด", "รูปแบบการชำระเงิน"], tracksFile: true, parse: parseIncomingDocuments },
   accounts: { requiredColumns: ["รหัสบัญชี", "ชื่อบัญชี", "ประเภท (asset/liability/equity/revenue/expense)"], parse: parseAccounts },
@@ -381,9 +434,14 @@ async function runImport() {
   const fileName = file.name || "ไฟล์นำเข้า";
 
   try {
-    const { changes, importedCount, postedCount, unpostedCount = 0, skippedLockedCount = 0 } = importType.parse(sheetRows, fileId);
+    const {
+      changes, importedCount, postedCount, unpostedCount = 0, skippedLockedCount = 0, skippedDuplicateCount = 0,
+    } = importType.parse(sheetRows, fileId);
+    const duplicateText = skippedDuplicateCount ? ` · ข้าม ${formatNumber(skippedDuplicateCount)} ชื่อที่มีอยู่แล้ว` : "";
     if (!importedCount) {
-      messageElement.textContent = "ไม่พบข้อมูลที่นำเข้าได้ ตรวจสอบชื่อคอลัมน์อีกครั้ง";
+      messageElement.textContent = skippedDuplicateCount
+        ? `ไม่มีรายชื่อใหม่ — ทุกชื่อในไฟล์มีอยู่แล้ว${duplicateText}`
+        : "ไม่พบข้อมูลที่นำเข้าได้ ตรวจสอบชื่อคอลัมน์อีกครั้ง";
       notifyError("ไม่มีแถวที่นำเข้าได้");
       return;
     }
@@ -403,7 +461,7 @@ async function runImport() {
     const postedText = importType.postsEntries ? ` · ลงบัญชีในสมุดรายวัน ${formatNumber(postedCount)} รายการ` : "";
     const unpostedText = unpostedCount ? ` · ไม่ได้ลงบัญชี ${formatNumber(unpostedCount)} แถว (ไม่มีวันที่)` : "";
     const skippedText = skippedLockedCount ? ` · ข้ามการลงบัญชี ${formatNumber(skippedLockedCount)} แถวที่อยู่ในงวดที่ปิดแล้ว` : "";
-    messageElement.textContent = `นำเข้าสำเร็จ ${formatNumber(importedCount)} รายการ จากไฟล์ ${fileName}${postedText}${unpostedText}${skippedText}`;
+    messageElement.textContent = `นำเข้าสำเร็จ ${formatNumber(importedCount)} รายการ จากไฟล์ ${fileName}${postedText}${unpostedText}${skippedText}${duplicateText}`;
     notifySuccess(`นำเข้าข้อมูลเรียบร้อย ${formatNumber(importedCount)} รายการ`);
     fileInput.value = "";
     handleFileSelected();
@@ -458,6 +516,10 @@ importTypeSelect.addEventListener("change", handleImportTypeChanged);
 byId("import-preview").addEventListener("click", showPreview);
 byId("import-run").addEventListener("click", runImport);
 setupDropZone();
+
+// ลิงก์จากหน้าอื่น เช่น import.html?type=supplier_names → เลือกประเภทให้เลย
+const requestedType = new URLSearchParams(location.search).get("type");
+if (requestedType && IMPORT_TYPES[requestedType]) importTypeSelect.value = requestedType;
 
 if (await loadData()) {
   renderImportedFileList("all-imported-files");

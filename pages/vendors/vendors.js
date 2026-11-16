@@ -21,8 +21,16 @@ import {
   normalizeSupplierCode,
 } from "../../src/accounting/customers.js";
 import { getLockedPeriodMessage, isDateLocked } from "../../src/accounting/journal.js";
+import {
+  ACCOUNT_PAYMENT_METHODS,
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_METHODS,
+  THAI_BANKS,
+  getDefaultSupplierPayment,
+} from "../../src/accounting/payment-methods.js";
 import { buildSubledger, getPartyKey } from "../../src/accounting/subledger.js";
 import { confirmDialog, formDialog } from "../../src/components/dialogs.js";
+import { renderImportedFileList } from "../../src/components/imported-file-list.js";
 import { notifyError, notifySuccess } from "../../src/components/notifications.js";
 import { buildCsv } from "../../src/utils/csv.js";
 import { getFileDateStamp, getTodayIso, toIsoDate } from "../../src/utils/date.js";
@@ -31,6 +39,31 @@ import { downloadCsv } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
 import { createId } from "../../src/utils/id.js";
 import { debounce } from "../../src/utils/timing.js";
+
+
+/**
+ * ช่องทางชำระเงินแบบสั้นสำหรับตาราง: โอนเข้าบัญชี → ชื่อธนาคาร, อื่น ๆ → ชื่อช่องทาง (เช่น "เงินสด")
+ * @param {{ paymentMethod?: string, bankName?: string }} supplier
+ */
+function formatPaymentChannel(supplier) {
+  const method = PAYMENT_METHOD_LABELS[supplier.paymentMethod || ""];
+  if (!supplier.paymentMethod || !method) return "";
+  if (supplier.paymentMethod === "transfer") return supplier.bankName || method;
+  return method;
+}
+
+/**
+ * รายละเอียดบัญชี (แสดงเมื่อชี้เมาส์ / ใช้ค้นหา / ส่งออก) เช่น "เลขที่บัญชี 123-4-56789-0 · ชื่อบัญชี บจก. ก"
+ * @param {{ paymentMethod?: string, bankAccountNo?: string, bankAccountName?: string }} supplier
+ */
+function formatPaymentDetail(supplier) {
+  if (!ACCOUNT_PAYMENT_METHODS.has(supplier.paymentMethod)) return "";
+  const numberLabel = supplier.paymentMethod === "promptpay" ? "พร้อมเพย์" : "เลขที่บัญชี";
+  return [
+    supplier.bankAccountNo ? `${numberLabel} ${supplier.bankAccountNo}` : "",
+    supplier.bankAccountName ? `ชื่อบัญชี ${supplier.bankAccountName}` : "",
+  ].filter(Boolean).join(" · ");
+}
 
 const statusSelect = byId("vendors-status");
 const searchInput = byId("vendors-search");
@@ -114,6 +147,8 @@ function buildVendorRows() {
       phone: details.phone || "",
       tax: details.tax || "",
       creditDays: details.creditDays ?? "",
+      paymentChannel: formatPaymentChannel(details),
+      paymentDetail: formatPaymentDetail(details),
       entryCount: record.count,
       lastDate: record.lastDate,
       outstanding: Math.round(payable.outstanding * 100) / 100,
@@ -144,7 +179,8 @@ function getFilteredRows(allRows) {
     if (status === "unregistered" && row.isRegistered) return false;
     if (status === "outstanding" && !row.outstanding) return false;
     if (!searchText) return true;
-    return `${row.code} ${row.name} ${row.contact} ${row.tax} ${row.phone}`.toLowerCase().includes(searchText);
+    return `${row.code} ${row.name} ${row.contact} ${row.tax} ${row.phone} ${row.paymentChannel} ${row.paymentDetail}`
+      .toLowerCase().includes(searchText);
   });
 }
 
@@ -165,7 +201,7 @@ function renderPage() {
   const rows = getFilteredRows(allRows);
   byId("vendors-count").textContent = `แสดง ${formatNumber(rows.length)} จาก ${formatNumber(allRows.length)} ราย`;
   if (!rows.length) {
-    tableBody.innerHTML = `<tr><td colspan="10" class="muted">${allRows.length ? "ไม่พบซัพพลายเออร์ที่ตรงกับตัวกรอง" : "ยังไม่มีซัพพลายเออร์ — กรอกฟอร์มด้านบนเพื่อเพิ่ม"}</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="11" class="muted">${allRows.length ? "ไม่พบซัพพลายเออร์ที่ตรงกับตัวกรอง" : "ยังไม่มีซัพพลายเออร์ — กรอกฟอร์มด้านบนเพื่อเพิ่ม"}</td></tr>`;
     return;
   }
   tableBody.innerHTML = rows.map((row) => {
@@ -186,6 +222,7 @@ function renderPage() {
       <td>${escapeHtml(row.phone)}</td>
       <td class="code">${escapeHtml(row.tax)}</td>
       <td class="right">${row.creditDays === "" || row.creditDays == null ? '<span class="muted">-</span>' : `${escapeHtml(row.creditDays)} วัน`}</td>
+      <td${row.paymentDetail ? ` title="${escapeHtml(row.paymentDetail)}"` : ""}>${row.paymentChannel ? escapeHtml(row.paymentChannel) : '<span class="muted">-</span>'}</td>
       <td class="right">${row.entryCount ? formatNumber(row.entryCount) : '<span class="muted">-</span>'}</td>
       <td class="nowrap">${row.lastDate ? escapeHtml(formatDate(row.lastDate)) : '<span class="muted">-</span>'}</td>
       <td class="right">${row.outstanding ? `<a href="../payables/payables.html"${row.overdueCount ? ' class="unbalanced" title="มีเอกสารเกินกำหนดชำระ"' : ""}>${formatMoney(row.outstanding)}</a>` : '<span class="muted">-</span>'}</td>
@@ -200,10 +237,10 @@ function exportCsv() {
     notifyError("ไม่มีข้อมูลให้ส่งออก");
     return;
   }
-  const headers = ["สถานะ", "รหัส", "ชื่อ", "ผู้ติดต่อ", "โทรศัพท์", "เลขผู้เสียภาษี", "เครดิตเทอม (วัน)", "จำนวนรายการ", "รายการล่าสุด", "ค้างชำระ"];
+  const headers = ["สถานะ", "รหัส", "ชื่อ", "ผู้ติดต่อ", "โทรศัพท์", "เลขผู้เสียภาษี", "เครดิตเทอม (วัน)", "ช่องทางชำระเงิน", "รายละเอียดบัญชี", "จำนวนรายการ", "รายการล่าสุด", "ค้างชำระ"];
   const csvRows = rows.map((row) => [
     row.isRegistered ? "อยู่ในทะเบียน" : "ยังไม่ลงทะเบียน", row.code, row.name, row.contact, row.phone, row.tax, row.creditDays,
-    row.entryCount, row.lastDate ? formatDate(row.lastDate) : "", row.outstanding,
+    row.paymentChannel, row.paymentDetail, row.entryCount, row.lastDate ? formatDate(row.lastDate) : "", row.outstanding,
   ]);
   downloadCsv(`suppliers-${getFileDateStamp()}.csv`, buildCsv(headers, csvRows));
   notifySuccess("ส่งออกรายชื่อซัพพลายเออร์เรียบร้อย");
@@ -224,11 +261,92 @@ const SUPPLIER_FIELD_INPUTS = {
   tax: "supplier-tax-id",
   creditDays: "supplier-credit-days",
   address: "supplier-address",
+  paymentMethod: "supplier-payment-method",
+  bankName: "supplier-bank-name",
+  bankAccountNo: "supplier-bank-account-no",
+  bankAccountName: "supplier-bank-account-name",
 };
 
+// ตัวเลือกช่องทางชำระเงิน + รายชื่อธนาคาร ในฟอร์มเพิ่ม
+byId("supplier-payment-method").innerHTML = PAYMENT_METHODS
+  .map((method) => `<option value="${method.value}">${escapeHtml(method.label)}</option>`).join("");
+const bankSelect = byId("supplier-bank-name");
+/** ใส่ตัวเลือกธนาคาร (extraBank = ชื่อธนาคารเดิมที่ไม่อยู่ในรายการ เช่นข้อมูลที่พิมพ์เองก่อนหน้านี้ — แสดงไว้ไม่ให้หาย) */
+function renderBankOptions(extraBank = "") {
+  const banks = extraBank && !THAI_BANKS.includes(extraBank) ? [...THAI_BANKS, extraBank] : THAI_BANKS;
+  bankSelect.innerHTML = '<option value="">— เลือกธนาคาร —</option>'
+    + banks.map((bank) => `<option value="${escapeHtml(bank)}">${escapeHtml(bank)}</option>`).join("");
+}
+renderBankOptions();
+// เลือกธนาคาร → ช่องทางชำระเงินเป็น "โอนเข้าบัญชีธนาคาร" ให้อัตโนมัติ (ธนาคารใช้กับช่องทางนี้เท่านั้น)
+bankSelect.addEventListener("change", () => {
+  if (bankSelect.value) byId("supplier-payment-method").value = "transfer";
+});
+
+/** id ของซัพพลายเออร์ที่กำลังแก้ไขในฟอร์ม ("" = โหมดเพิ่มใหม่) */
+let editingSupplierId = "";
+
+/** สลับหัวข้อ/ปุ่มของฟอร์มตามโหมด เพิ่ม ↔ แก้ไข */
+function setFormMode(supplier = null) {
+  editingSupplierId = supplier ? supplier.id : "";
+  byId("supplier-form-title").textContent = supplier
+    ? `แก้ไขซัพพลายเออร์ ${supplier.code || ""}`.trim()
+    : "เพิ่มซัพพลายเออร์";
+  byId("supplier-submit").textContent = supplier ? "บันทึกการแก้ไข" : "เพิ่มซัพพลายเออร์";
+  byId("supplier-reset").textContent = supplier ? "ยกเลิกการแก้ไข" : "ล้าง";
+}
+
+/** ล้างฟอร์มกลับเป็นโหมดเพิ่มใหม่ พร้อมรหัสแนะนำ */
 function resetSupplierForm() {
   supplierForm.reset();
+  renderBankOptions();
+  setFormMode(null);
   byId("supplier-code").value = createSupplierCode(); // แนะนำรหัสถัดไป (แก้เองได้)
+  applyDefaultPayment();
+}
+
+/** ช่องทางชำระเงินเริ่มต้นของซัพพลายเออร์ใหม่ ตามหน้าตั้งค่า (ยังไม่ตั้ง = โอนเข้าบัญชีธนาคาร · ออมสิน) */
+function applyDefaultPayment() {
+  const { paymentMethod, bankName } = getDefaultSupplierPayment(state.settings);
+  renderBankOptions(bankName);
+  byId("supplier-payment-method").value = paymentMethod;
+  bankSelect.value = bankName;
+}
+
+/** ช่องทางที่ตั้งให้ทุกรายในการตั้งครั้งเดียว (คงที่ ไม่เปลี่ยนตามหน้าตั้งค่า) */
+const PRESET_PAYMENT = { paymentMethod: "transfer", bankName: "ออมสิน" };
+
+/**
+ * ครั้งเดียว: ตั้งช่องทางชำระเงินของซัพพลายเออร์ในทะเบียนทุกรายเป็น "โอนเข้าบัญชีธนาคาร · ออมสิน"
+ * บันทึกแฟล็กไว้ใน settings (พร้อมกับข้อมูลซัพพลายเออร์) → ทำครั้งเดียวทุกเครื่อง ไม่ทับค่าที่แก้ภายหลัง
+ */
+const PAYMENT_PRESET_FLAG = "supplierPaymentPreset";
+const PAYMENT_PRESET_ID = "gsb-all-2026-11";
+async function applyOneTimePaymentPreset() {
+  if (state.settings[PAYMENT_PRESET_FLAG] === PAYMENT_PRESET_ID) return;
+  const suppliers = state.suppliers.map((supplier) => ({ ...supplier, ...PRESET_PAYMENT }));
+  const settings = { ...state.settings, [PAYMENT_PRESET_FLAG]: PAYMENT_PRESET_ID };
+  const savePromise = commitChanges({ suppliers, settings });
+  renderPage();
+  if (await savePromise) {
+    if (suppliers.length) notifySuccess(`ตั้งช่องทางชำระเงินของซัพพลายเออร์ ${formatNumber(suppliers.length)} รายเป็น “ออมสิน” แล้ว`);
+  } else {
+    renderPage();
+  }
+}
+
+/** กด "แก้ไข" ซัพพลายเออร์ในทะเบียน → ใส่ข้อมูลลงฟอร์มด้านบน */
+function startEditingSupplier(supplierId) {
+  const supplier = state.suppliers.find((item) => item.id === supplierId);
+  if (!supplier) return;
+  supplierForm.reset();
+  renderBankOptions(supplier.bankName || "");
+  Object.entries(SUPPLIER_FIELD_INPUTS).forEach(([field, inputId]) => {
+    byId(inputId).value = supplier[field] ?? "";
+  });
+  setFormMode(supplier);
+  supplierForm.scrollIntoView({ behavior: "smooth", block: "start" });
+  byId("supplier-name").focus({ preventScroll: true });
 }
 
 /**
@@ -242,6 +360,18 @@ function readSupplierData(values, ignoreId = "") {
   data.code = normalizeSupplierCode(data.code); // พิมพ์ย่อได้ เช่น "7" หรือ "s7" → S007
   if (!data.code || !data.name) return { error: "กรุณาระบุรหัสและชื่อซัพพลายเออร์" };
   data.creditDays = data.creditDays === "" ? "" : Math.max(0, Math.round(Number(data.creditDays) || 0));
+  if (!(data.paymentMethod in PAYMENT_METHOD_LABELS)) data.paymentMethod = "";
+  // ช่องทางที่ไม่ใช้บัญชี (เงินสด/เช็ค/ไม่ระบุ) → ไม่เก็บข้อมูลบัญชีค้างไว้
+  if (!ACCOUNT_PAYMENT_METHODS.has(data.paymentMethod)) {
+    data.bankName = "";
+    data.bankAccountNo = "";
+    data.bankAccountName = "";
+  } else if (data.paymentMethod === "promptpay") {
+    data.bankName = "";
+  }
+  // โอนเข้าบัญชี: เลขที่บัญชีใส่ภายหลังได้ (ค่าเริ่มต้นทุกรายคือออมสิน) / พร้อมเพย์: ต้องมีหมายเลข
+  if (data.paymentMethod === "promptpay" && !data.bankAccountNo) return { error: "กรุณาระบุหมายเลขพร้อมเพย์" };
+  if (data.paymentMethod === "transfer" && !data.bankName) return { error: "กรุณาระบุธนาคาร" };
   if (state.suppliers.some((supplier) => supplier.code === data.code && supplier.id !== ignoreId)) {
     return { error: `รหัสซัพพลายเออร์ ${data.code} มีอยู่แล้ว` };
   }
@@ -255,9 +385,13 @@ function readSupplierData(values, ignoreId = "") {
 async function handleSupplierSubmit(event) {
   event.preventDefault();
   const values = Object.fromEntries(Object.entries(SUPPLIER_FIELD_INPUTS).map(([field, inputId]) => [field, byId(inputId).value]));
-  const result = readSupplierData(values);
+  const result = readSupplierData(values, editingSupplierId);
   if (result.error) {
     notifyError(result.error);
+    return;
+  }
+  if (editingSupplierId) {
+    await saveEditedSupplier(editingSupplierId, result.data);
     return;
   }
   const savePromise = commitChanges({ suppliers: [...state.suppliers, { id: createId(), ...result.data }] });
@@ -311,33 +445,16 @@ async function renumberSupplierCodes() {
 /* แก้ไข / ลบ                                                           */
 /* ------------------------------------------------------------------ */
 
-/** แก้ไขซัพพลายเออร์ในทะเบียน */
-async function editRegisteredSupplier(supplierId) {
-  const supplier = state.suppliers.find((item) => item.id === supplierId);
-  if (!supplier) return;
-  const values = await formDialog({
-    title: `แก้ไขซัพพลายเออร์ ${supplier.code || ""}`.trim(),
-    icon: "✎",
-    fields: [
-      { name: "code", label: "รหัสเจ้าหนี้", value: supplier.code || "", required: true },
-      { name: "name", label: "ชื่อเจ้าหนี้ / บริษัท", value: supplier.name || "", required: true },
-      { name: "contact", label: "ผู้ติดต่อ", value: supplier.contact || "" },
-      { name: "phone", label: "โทรศัพท์", value: supplier.phone || "" },
-      { name: "tax", label: "เลขประจำตัวผู้เสียภาษี", value: supplier.tax || "" },
-      { name: "creditDays", label: "เครดิตเทอม (วัน)", type: "number", min: 0, step: 1, value: supplier.creditDays ?? "" },
-      { name: "address", label: "ที่อยู่", value: supplier.address || "" },
-    ],
-  });
-  if (!values) return;
-
-  const result = readSupplierData(values, supplierId);
-  if (result.error) {
-    notifyError(result.error);
+/** บันทึกการแก้ไขซัพพลายเออร์ในทะเบียน (จากฟอร์มด้านบนในโหมดแก้ไข) */
+async function saveEditedSupplier(supplierId, supplierData) {
+  if (!state.suppliers.some((item) => item.id === supplierId)) {
+    notifyError("ไม่พบซัพพลายเออร์รายนี้แล้ว (อาจถูกลบจากเครื่องอื่น)");
+    resetSupplierForm();
     return;
   }
-  const supplierData = result.data;
   const suppliers = state.suppliers.map((item) => (item.id === supplierId ? { ...item, ...supplierData } : item));
   const savePromise = commitChanges({ suppliers });
+  resetSupplierForm();
   renderPage();
   if (await savePromise) notifySuccess(`แก้ไขซัพพลายเออร์ ${supplierData.code} - ${supplierData.name} แล้ว`);
   else renderPage();
@@ -358,6 +475,7 @@ async function deleteRegisteredSupplier(supplierId) {
   const changes = { suppliers: state.suppliers.filter((item) => item.id !== supplierId) };
   if (autoDesc.length !== state.autoDesc.length) changes.autoDesc = autoDesc;
   const savePromise = commitChanges(changes);
+  if (editingSupplierId === supplierId) resetSupplierForm(); // ลบรายที่กำลังแก้ไขอยู่ → ออกจากโหมดแก้ไข
   renderPage();
   if (await savePromise) notifySuccess("ลบซัพพลายเออร์เรียบร้อย");
   else renderPage();
@@ -443,7 +561,7 @@ tableBody.addEventListener("click", (event) => {
   if (button.dataset.action === "register") {
     startRegistering(button.dataset.vendorName || "");
   } else if (button.dataset.supplierId) {
-    if (isEdit) editRegisteredSupplier(button.dataset.supplierId);
+    if (isEdit) startEditingSupplier(button.dataset.supplierId);
     else deleteRegisteredSupplier(button.dataset.supplierId);
   } else if (button.dataset.vendorName != null) {
     if (isEdit) renameUnregisteredSupplier(button.dataset.vendorName);
@@ -453,11 +571,14 @@ tableBody.addEventListener("click", (event) => {
 statusSelect.addEventListener("change", renderPage);
 searchInput.addEventListener("input", debounce(renderPage, 200));
 byId("vendors-export").addEventListener("click", exportCsv);
-
 supplierForm.addEventListener("submit", handleSupplierSubmit);
-// ปุ่ม "ล้าง" (type=reset) ล้างทุกช่อง → ใส่รหัสแนะนำกลับหลังเบราว์เซอร์ล้างเสร็จ
-supplierForm.addEventListener("reset", () => setTimeout(() => {
+// ปุ่ม "ล้าง" / "ยกเลิกการแก้ไข" (type=reset) → กลับเป็นโหมดเพิ่มใหม่
+// (ฟังที่ปุ่ม ไม่ใช่อีเวนต์ reset ของฟอร์ม เพราะ startEditingSupplier ก็เรียก form.reset() เช่นกัน)
+byId("supplier-reset").addEventListener("click", () => setTimeout(() => {
+  setFormMode(null);
+  renderBankOptions();
   byId("supplier-code").value = createSupplierCode();
+  applyDefaultPayment();
 }));
 
 if (await loadData(["suppliers", "customers", "customerNames", "entries", "accounts", "autoDesc"])) {
@@ -466,5 +587,7 @@ if (await loadData(["suppliers", "customers", "customerNames", "entries", "accou
   const requestedName = new URLSearchParams(location.search).get("name");
   if (requestedName) startRegistering(requestedName);
   renderPage();
+  renderImportedFileList("supplier-import-files", "supplier_names", renderPage);
   onDataRefresh(renderPage);
+  applyOneTimePaymentPreset();
 }

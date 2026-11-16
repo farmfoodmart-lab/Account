@@ -146,6 +146,20 @@
     document.body.insertAdjacentHTML("beforeend", '<div id="toasts" class="toasts" aria-live="polite"></div>');
   }
 
+  // เปิดไฟล์ตรง ๆ (file://) เบราว์เซอร์จะบล็อก ES Modules ทำให้ระบบค้างที่ "กำลังเชื่อมต่อ..." — แจ้งให้ชัดเจนแทน
+  if (location.protocol === "file:") {
+    const message = "เปิดไฟล์โดยตรงไม่ได้ — กรุณาเปิดผ่านทางลัด \"Accounting\" บนเดสก์ท็อป (สร้างได้ด้วย ติดตั้งทางลัด.bat)";
+    const statusElement = byId("status");
+    statusElement.textContent = "เปิดผิดวิธี";
+    statusElement.title = message;
+    statusElement.dataset.state = "error";
+    statusElement.classList.add("error");
+    document.addEventListener("DOMContentLoaded", () => {
+      const main = byId("main");
+      if (main) main.insertAdjacentHTML("afterbegin", `<div class="card" role="alert" style="border-color:var(--danger);color:var(--danger);margin-bottom:16px">${message}</div>`);
+    });
+  }
+
   /* ---------------------------------------------------------------- */
   /* ปุ่มธีม และออกจากระบบ                                               */
   /* ---------------------------------------------------------------- */

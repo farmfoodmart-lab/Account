@@ -610,6 +610,48 @@ async function stampMissingRevisions(keys, remoteRevisions) {
   }
 }
 
+let isPrefetching = false;
+
+/**
+ * โหลดชุดข้อมูลที่หน้านี้ไม่ได้ใช้ เก็บลงแคชในเครื่องล่วงหน้า (เบื้องหลัง)
+ * → หลังเข้าสู่ระบบ เปิดเมนูไหนก็แสดงข้อมูลได้ทันทีจากแคช ไม่ต้องรอดาวน์โหลด
+ * ไม่แตะ state ของหน้าปัจจุบัน ดาวน์โหลดเฉพาะชุดที่รหัสรุ่นในแคชไม่ตรงกับเซิร์ฟเวอร์
+ * @param {string[]} pageCollections ชุดข้อมูลที่หน้านี้โหลดไปแล้ว
+ * @param {Record<string, string>} remoteRevisions รหัสรุ่นบนเซิร์ฟเวอร์ที่เพิ่งอ่านมา
+ */
+function prefetchOtherCollections(pageCollections, remoteRevisions) {
+  if (isPrefetching) return;
+  const others = DATA_COLLECTIONS.filter((collection) => !pageCollections.includes(collection));
+  if (!others.length) return;
+  isPrefetching = true;
+  const schedule = window.requestIdleCallback || ((callback) => setTimeout(callback, 300));
+  schedule(async () => {
+    try {
+      const cacheEntries = await readCacheEntries(others);
+      const stale = others.filter((collection) => {
+        const cached = cacheEntries[collection];
+        return !cached || !remoteRevisions[collection] || cached.revision !== remoteRevisions[collection];
+      });
+      // ทีละชุด เพื่อไม่แย่งเครือข่ายกับการบันทึกของผู้ใช้
+      for (const collection of stale) {
+        const download = await downloadCollection(collection);
+        // หน้านี้อาจโหลด/บันทึกชุดนี้เองระหว่างนั้น → ให้ข้อมูลของหน้าเป็นตัวจริง ไม่เขียนทับ
+        if (loadedCollections.has(collection)) continue;
+        await writeCacheEntry(collection, {
+          items: download.items,
+          chunks: download.chunks,
+          chunkLengths: download.chunkItems.map((items) => items.length),
+          revision: remoteRevisions[collection] || "",
+        });
+      }
+    } catch (error) {
+      console.warn("โหลดข้อมูลล่วงหน้าไม่สำเร็จ (จะโหลดเมื่อเปิดหน้านั้นแทน)", error);
+    } finally {
+      isPrefetching = false;
+    }
+  });
+}
+
 /**
  * ทำให้ชุดข้อมูลที่ขอตรงกับ Firestore — ชุดที่รหัสรุ่นในแคชตรงกับเซิร์ฟเวอร์จะไม่ดาวน์โหลดซ้ำ
  * @param {string[]} collections ชุดข้อมูลที่หน้านี้ต้องใช้
@@ -688,6 +730,7 @@ async function syncWithServer(collections, cacheEntries, isBackground) {
     finishProgress();
     showCompanyName();
     setSyncStatus("ซิงก์ข้อมูลแล้ว");
+    prefetchOtherCollections(collections, remote.revisions);
 
     // แจ้งหน้าเว็บให้วาดใหม่ เฉพาะกรณีที่หน้าแสดงข้อมูลจากแคชไปแล้วและข้อมูลเปลี่ยนจริง
     const refreshedKeys = isBackground ? changedKeys.filter((key) => cacheEntries[key]) : [];

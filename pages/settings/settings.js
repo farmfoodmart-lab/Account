@@ -19,6 +19,7 @@ import { ACCOUNT_ROLES } from "../../src/accounting/constants.js";
 import { findAccountForRole, formatAccountLabel, renderAccountOptions } from "../../src/accounting/accounts.js";
 import { buildClosingLines, calculateClosingBalances } from "../../src/accounting/closing.js";
 import { isDateLocked } from "../../src/accounting/journal.js";
+import { PAYMENT_METHODS, THAI_BANKS, getDefaultSupplierPayment } from "../../src/accounting/payment-methods.js";
 import { sortEntriesByDate, upsertJournalEntry } from "../../src/accounting/posting.js";
 import { DEFAULT_CREDIT_DAYS } from "../../src/accounting/subledger.js";
 import { notifyError, notifySuccess } from "../../src/components/notifications.js";
@@ -26,9 +27,27 @@ import { confirmDialog } from "../../src/components/dialogs.js";
 import { getFileDateStamp } from "../../src/utils/date.js";
 import { byId } from "../../src/utils/dom.js";
 import { downloadJson } from "../../src/utils/download.js";
-import { formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
+import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
 
 const settingsForm = byId("settings-form");
+const supplierPaymentSelect = byId("settings-supplier-payment-method");
+const supplierBankSelect = byId("settings-supplier-bank-name");
+
+/** ค่าเริ่มต้นช่องทางชำระเงินของซัพพลายเออร์ใหม่ */
+function renderSupplierPaymentFields() {
+  const { paymentMethod, bankName } = getDefaultSupplierPayment(state.settings);
+  supplierPaymentSelect.innerHTML = PAYMENT_METHODS
+    .map((method) => `<option value="${method.value}">${escapeHtml(method.label)}</option>`).join("");
+  const banks = bankName && !THAI_BANKS.includes(bankName) ? [...THAI_BANKS, bankName] : THAI_BANKS;
+  supplierBankSelect.innerHTML = '<option value="">— เลือกธนาคาร —</option>'
+    + banks.map((bank) => `<option value="${escapeHtml(bank)}">${escapeHtml(bank)}</option>`).join("");
+  supplierPaymentSelect.value = paymentMethod;
+  supplierBankSelect.value = bankName;
+}
+// เลือกธนาคาร → ช่องทางเป็น "โอนเข้าบัญชีธนาคาร" อัตโนมัติ
+supplierBankSelect.addEventListener("change", () => {
+  if (supplierBankSelect.value) supplierPaymentSelect.value = "transfer";
+});
 const closingDateInput = byId("close-date");
 const backupMessage = byId("backup-msg");
 const backupFileInput = byId("backup-import");
@@ -113,6 +132,7 @@ function renderSettingsPage() {
   byId("settings-credit-days").value = settings.creditDays ?? DEFAULT_CREDIT_DAYS;
   if (!closingDateInput.value) closingDateInput.value = settings.periodEnd || "";
   renderAccountRoleFields();
+  renderSupplierPaymentFields();
   renderLockStatus();
   renderClosingPreview();
   renderDataCounts();
@@ -143,6 +163,12 @@ async function handleSettingsSubmit(event) {
     return;
   }
 
+  const supplierPaymentMethod = supplierPaymentSelect.value;
+  if (supplierPaymentMethod === "transfer" && !supplierBankSelect.value) {
+    notifyError("ค่าเริ่มต้นซัพพลายเออร์: กรุณาเลือกธนาคาร");
+    return;
+  }
+
   // เก็บเฉพาะบทบาทที่ผู้ใช้เลือกบัญชีเอง (ที่เว้นว่าง = ให้ระบบเลือกอัตโนมัติ)
   const accountMap = {};
   settingsForm.querySelectorAll("[data-role]").forEach((select) => {
@@ -159,6 +185,8 @@ async function handleSettingsSubmit(event) {
     vatRate: Number(byId("settings-vat-rate").value) || 0,
     creditDays: Math.max(0, Math.round(Number(byId("settings-credit-days").value) || 0)),
     accountMap,
+    supplierPaymentMethod,
+    supplierBankName: supplierPaymentMethod === "transfer" ? supplierBankSelect.value : "",
   }, "บันทึกการตั้งค่าเรียบร้อย");
 }
 

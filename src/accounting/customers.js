@@ -223,7 +223,17 @@ export function normalizeSupplierCode(code) {
  * @returns {string} เช่น "S003"
  */
 export function createSupplierCode() {
-  return createCodes(SUPPLIER_CODE_PREFIX, state.suppliers || [], 1)[0];
+  return createSupplierCodes(1)[0];
+}
+
+/**
+ * สร้างรหัสเจ้าหนี้ใหม่หลายรหัสต่อเนื่องกัน (ใช้ตอนนำเข้าจากไฟล์)
+ * @param {number} [count=1]
+ * @param {object[]} [extraRecords=[]] รายการที่จะเพิ่มด้วย (ยังไม่อยู่ใน state) เพื่อไม่ให้รหัสชนกัน
+ * @returns {string[]}
+ */
+export function createSupplierCodes(count = 1, extraRecords = []) {
+  return createCodes(SUPPLIER_CODE_PREFIX, [...(state.suppliers || []), ...extraRecords], count);
 }
 
 /**

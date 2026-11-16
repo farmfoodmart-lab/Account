@@ -35,6 +35,11 @@
           <label class="field"><span>อัตรา VAT เริ่มต้น (%)</span><input type="number" id="settings-vat-rate" min="0" max="100" step="0.01"></label>
           <label class="field"><span>เครดิตเทอมเริ่มต้น (วัน)</span><input type="number" id="settings-credit-days" min="0" max="365" step="1"><span class="hint-text">ใช้คำนวณวันครบกำหนดของลูกหนี้/เจ้าหนี้ เมื่อรายการในสมุดรายวันไม่ได้ระบุ</span></label>
         </div>
+        <div class="card stack"><h3>ค่าเริ่มต้นซัพพลายเออร์</h3>
+          <p class="muted">ช่องทางการชำระเงินที่เลือกไว้ให้เมื่อเพิ่มซัพพลายเออร์ใหม่ (แก้รายตัวได้ในหน้ารายชื่อซัพพลายเออร์)</p>
+          <label class="field"><span>ช่องทางการชำระเงิน</span><select id="settings-supplier-payment-method"></select></label>
+          <label class="field"><span>ธนาคาร</span><select id="settings-supplier-bank-name"></select><span class="hint-text">ใช้เมื่อช่องทางเป็น “โอนเข้าบัญชีธนาคาร”</span></label>
+        </div>
       </div>
       <div class="card"><div class="card-head"><h3>บัญชีสำหรับลงบัญชีอัตโนมัติ</h3><span class="muted">ใช้กับลูกหนี้ เจ้าหนี้ ภาษี และการปิดบัญชี · เว้นว่างเพื่อให้ระบบเลือกจากรหัสมาตรฐาน</span></div>
         <div class="form-grid" id="settings-account-map"></div>

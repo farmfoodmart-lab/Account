@@ -650,6 +650,7 @@ td.muted { padding: 28px 14px; text-align: center; }
 .code { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .col-amount { width: 150px; }
 .col-code { width: 90px; }
+.col-name { min-width: 180px; }
 .col-date { width: 110px; }
 .col-actions { width: 1%; }
 tr.group-head td {
