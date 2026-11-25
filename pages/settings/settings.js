@@ -132,6 +132,7 @@ function renderSettingsPage() {
   byId("settings-vat-rate").value = settings.vatRate ?? 7;
   byId("settings-credit-days").value = settings.creditDays ?? DEFAULT_CREDIT_DAYS;
   byId("settings-journal-account-search").checked = Boolean(settings.journalAccountSearch);
+  byId("settings-journal-party-list-on-focus").checked = settings.journalPartyListOnFocus !== false;
   if (!closingDateInput.value) closingDateInput.value = settings.periodEnd || "";
   renderAccountRoleFields();
   renderSupplierPaymentFields();
@@ -408,6 +409,13 @@ byId("settings-journal-account-search").addEventListener("change", (event) => {
   saveSettings({ journalAccountSearch: isEnabled }, isEnabled
     ? "เปิดการพิมพ์ค้นหาบัญชีในสมุดรายวันแล้ว"
     : "ปิดการพิมพ์ค้นหาบัญชีในสมุดรายวันแล้ว (เลือกจากรายการอย่างเดียว)");
+});
+// สวิตช์ "แสดงรายการชื่อลูกค้าทันทีเมื่อคลิกช่อง": บันทึกทันทีที่กด
+byId("settings-journal-party-list-on-focus").addEventListener("change", (event) => {
+  const isEnabled = event.target.checked;
+  saveSettings({ journalPartyListOnFocus: isEnabled }, isEnabled
+    ? "เปิดแล้ว: คลิกช่องชื่อลูกค้าแล้วรายการขึ้นทันที"
+    : "ปิดแล้ว: รายการชื่อลูกค้าขึ้นเมื่อเริ่มพิมพ์");
 });
 closingDateInput.addEventListener("change", renderClosingPreview);
 byId("close-run").addEventListener("click", createClosingEntry);

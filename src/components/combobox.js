@@ -35,6 +35,8 @@ const MAX_VISIBLE_OPTIONS = 5000;
  * @param {string} [config.emptyText] ข้อความเมื่อไม่พบตัวเลือก
  * @param {boolean} [config.selectFirstOnEnter] กด Enter โดยยังไม่ได้เลื่อนเลือก → เลือกตัวเลือกแรกที่ตรง
  *   (เช่น พิมพ์รหัสบัญชี "101" แล้วกด Enter)
+ * @param {boolean | (() => boolean)} [config.openOnFocus] โฟกัสช่องแล้วแสดงรายการทันที (ค่าเริ่มต้น true)
+ *   ส่งเป็นฟังก์ชันเพื่ออ่านค่าล่าสุดทุกครั้ง · false = แสดงเมื่อพิมพ์ กดลูกศรลง หรือกดปุ่ม ▾
  */
 export function createCombobox({
   input,
@@ -42,6 +44,7 @@ export function createCombobox({
   onSelect = () => {},
   emptyText = "ไม่พบในรายการ — ใช้ข้อความที่พิมพ์ได้เลย",
   selectFirstOnEnter = false,
+  openOnFocus = true,
 }) {
   const wrapper = document.createElement("div");
   wrapper.className = "combobox";
@@ -185,7 +188,9 @@ export function createCombobox({
     open(input.value);
     isFilteredByTyping = Boolean(input.value.trim());
   });
-  input.addEventListener("focus", () => open(""));
+  input.addEventListener("focus", () => {
+    if (typeof openOnFocus === "function" ? openOnFocus() : openOnFocus) open("");
+  });
   input.addEventListener("keydown", (event) => {
     // พิมพ์ค้นหาแล้วมีตัวเลือก: Tab = ตัวถัดไป (ครั้งแรก = ตัวแรก), Shift+Tab = ตัวก่อนหน้า
     // เลยตัวสุดท้าย (หรือ Shift+Tab ที่ตัวแรก) → ออกจากช่องไปช่องถัดไปตามปกติ

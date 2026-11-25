@@ -495,6 +495,8 @@ function autoDetectPartyType(isFinal) {
 const partyCombobox = createCombobox({
   input: partyInput,
   getOptions: getFilteredPartyOptions,
+  // ตั้งค่าที่หน้าตั้งค่า > ฟีเจอร์ (ไม่มีค่า = เปิด) · ปิด = รายการขึ้นเมื่อเริ่มพิมพ์
+  openOnFocus: () => state.settings.journalPartyListOnFocus !== false,
   onSelect: (option, { viaKeyboard }) => {
     // เลือกจากรายการ → รู้ประเภทจากกลุ่มของตัวเลือก
     const type = Object.keys(PARTY_GROUPS).find((key) => PARTY_GROUPS[key] === option.group) || "";

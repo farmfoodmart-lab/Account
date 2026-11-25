@@ -101,6 +101,7 @@ export function createDefaultState() {
       creditDays: 30,   // เครดิตเทอมเริ่มต้น (วัน) ใช้คำนวณวันครบกำหนดลูกหนี้/เจ้าหนี้
       accountMap: {},   // บัญชีที่ผู้ใช้กำหนดเองสำหรับลงบัญชีอัตโนมัติ { role: accountId }
       journalAccountSearch: false, // สมุดรายวัน: ช่องบัญชีพิมพ์ค้นหาได้ (false = เลือกจากรายการอย่างเดียว)
+      journalPartyListOnFocus: true, // สมุดรายวัน: โฟกัสช่องชื่อลูกค้าแล้วแสดงรายการตัวเลือกทันที (false = แสดงเมื่อพิมพ์)
     },
   };
 }
