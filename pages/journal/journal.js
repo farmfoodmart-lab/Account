@@ -20,6 +20,9 @@ import { AMOUNT_EPSILON, ENTRY_KIND_LABELS } from "../../src/accounting/constant
 import { calculateEntryTotal, getEntryKind } from "../../src/accounting/rules.js";
 import { findAccountById, renderAccountOptions } from "../../src/accounting/accounts.js";
 import {
+  createCustomerCodes,
+  createSupplierCode,
+  formatCustomerLabel,
   getPartyOptions,
   PARTY_GROUPS,
   parseCustomerOptionValue,
@@ -587,21 +590,54 @@ function readEntryForm() {
  * @returns {object | null} แม่แบบใหม่ หรือ null ถ้ามีแม่แบบของชื่อนี้อยู่แล้ว
  */
 function buildTemplateForNewParty(entryData) {
-  const { customerName, itemName, partyType, desc, lines } = entryData;
+  const { customerId, customerName, itemName, partyType, desc, lines } = entryData;
   const debitLine = lines.find((line) => line.debit > 0);
   const creditLine = lines.find((line) => line.credit > 0);
   if (!desc || !debitLine || !creditLine || (!customerName && !itemName)) return null;
-  const hasTemplate = state.autoDesc.some((rule) => (itemName
-    ? String(rule.itemName || "").trim() === itemName
-    : !rule.itemName && !rule.customerId && rule.customerName === customerName));
+  const hasTemplate = state.autoDesc.some((rule) => {
+    if (itemName) return String(rule.itemName || "").trim() === itemName;
+    if (rule.itemName) return false;
+    return customerId ? rule.customerId === customerId : !rule.customerId && rule.customerName === customerName;
+  });
   if (hasTemplate) return null;
+  let partyFields;
+  if (itemName) partyFields = { itemName };
+  else if (customerId) partyFields = { customerId, customerName }; // คู่ค้าในทะเบียน (เช่น ซัพพลายเออร์ที่เพิ่งเพิ่ม)
+  else partyFields = { customerName, ...(partyType ? { partyType } : {}) };
   return {
     id: createId(),
     debitAccountId: debitLine.accountId,
     creditAccountId: creditLine.accountId,
     text: desc,
-    ...(itemName ? { itemName } : { customerName, ...(partyType ? { partyType } : {}) }),
+    ...partyFields,
   };
+}
+
+/**
+ * ชื่อลูกค้าที่พิมพ์ใหม่ (ประเภท "ลูกค้า" และยังไม่มีในรายชื่อลูกค้า) → เพิ่มเข้ารายชื่อลูกค้าพร้อมรหัสใหม่
+ * เพื่อให้ชื่อขึ้นในหน้ารายชื่อลูกค้า และตัวเลือกลูกค้าของทุกหน้า
+ * @param {object} entryData ผลจาก readEntryForm
+ * @returns {object | null} รายชื่อลูกค้าใหม่ หรือ null ถ้าไม่ต้องเพิ่ม
+ */
+function buildCustomerRecordForNewName(entryData) {
+  const name = String(entryData.customerName || "").trim();
+  if (entryData.partyType !== "customer" || entryData.customerId || !name) return null;
+  const isListed = [...state.customers, ...state.customerNames].some((record) => String(record.name || "").trim() === name);
+  if (isListed) return null;
+  return { code: createCustomerCodes()[0], name, fileId: null };
+}
+
+/**
+ * ชื่อซัพพลายเออร์ที่พิมพ์ใหม่ (ประเภท "ซัพพลายเออร์" และยังไม่มีในทะเบียน) → เพิ่มเข้าทะเบียนซัพพลายเออร์พร้อมรหัสใหม่
+ * รายการบัญชีจะอ้างซัพพลายเออร์ใหม่ด้วย id เหมือนเลือกจากทะเบียน (ทะเบียนเจ้าหนี้จับคู่ยอดได้ถูกราย)
+ * @param {object} entryData ผลจาก readEntryForm
+ * @returns {object | null} ซัพพลายเออร์ใหม่ หรือ null ถ้าไม่ต้องเพิ่ม
+ */
+function buildSupplierForNewName(entryData) {
+  const name = String(entryData.customerName || "").trim();
+  if (entryData.partyType !== "supplier" || entryData.customerId || !name) return null;
+  if ((state.suppliers || []).some((supplier) => String(supplier.name || "").trim() === name)) return null;
+  return { id: createId(), code: createSupplierCode(), name };
 }
 
 async function handleFormSubmit(event) {
@@ -613,7 +649,13 @@ async function handleFormSubmit(event) {
     return;
   }
 
+  const newSupplier = buildSupplierForNewName(result.entryData);
+  if (newSupplier) {
+    // อ้างซัพพลายเออร์ใหม่ด้วย id (ไม่ใช่ชื่อลอย ๆ) เหมือนเลือกจากทะเบียน
+    result.entryData = { ...result.entryData, customerId: newSupplier.id, customerName: formatCustomerLabel(newSupplier), partyType: "" };
+  }
   const newTemplate = result.isNewParty ? buildTemplateForNewParty(result.entryData) : null;
+  const newCustomerRecord = buildCustomerRecordForNewName(result.entryData);
   const { customerId, customerName, itemName, partyType, due, ...entryFields } = result.entryData;
   // ฟิลด์ที่ไม่บังคับ: ใส่เฉพาะเมื่อมีค่า
   const optionalFields = {
@@ -649,9 +691,21 @@ async function handleFormSubmit(event) {
 
   // บันทึกแบบทันที: แสดงผลและล้างฟอร์มให้กรอกรายการถัดไปได้เลย ส่วนการส่งขึ้นเซิร์ฟเวอร์ทำเบื้องหลัง
   // ชื่อใหม่ → บันทึกแม่แบบคำอธิบายอัตโนมัติไปพร้อมกัน (สำเร็จหรือไม่สำเร็จพร้อมรายการ)
-  const savePromise = commitChanges(newTemplate ? { entries, autoDesc: [...state.autoDesc, newTemplate] } : { entries });
+  // ชื่อลูกค้าใหม่ → เพิ่มเข้ารายชื่อลูกค้าไปพร้อมกัน
+  const savePromise = commitChanges({
+    entries,
+    ...(newTemplate ? { autoDesc: [...state.autoDesc, newTemplate] } : {}),
+    ...(newCustomerRecord ? { customerNames: [...state.customerNames, newCustomerRecord] } : {}),
+    ...(newSupplier ? { suppliers: [...(state.suppliers || []), newSupplier] } : {}),
+  });
   if (newTemplate) {
     notify(`บันทึกแม่แบบคำอธิบายอัตโนมัติของ “${newTemplate.itemName || newTemplate.customerName}” แล้ว`);
+  }
+  if (newCustomerRecord) {
+    notify(`เพิ่ม “${newCustomerRecord.code} - ${newCustomerRecord.name}” เข้ารายชื่อลูกค้าแล้ว`);
+  }
+  if (newSupplier) {
+    notify(`เพิ่ม “${formatCustomerLabel(newSupplier)}” เข้ารายชื่อซัพพลายเออร์แล้ว`);
   }
   monthFilter?.refresh(); // รายการเดือนใหม่จะขึ้นในตัวเลือกเดือนทันที
   resetForm({ keepDate: true });
