@@ -214,6 +214,18 @@ export function setSyncStatus(text, isError = false, percent = null) {
 /** @type {{ label: string, total: number, done: number, expected: number, shownPercent: number } | null} */
 let activeProgress = null;
 
+/** ข้อความแทน "กำลังบันทึก" ระหว่างงานใหญ่ของหน้า เช่น "กำลังนำเข้าข้อมูล" (null = ใช้ข้อความปกติ) */
+let activityLabel = null;
+
+/**
+ * ตั้งชื่องานที่กำลังทำ ให้สถานะมุมล่างของเมนูแสดงชื่องานนี้ (รวมตอนบันทึก เช่น "กำลังนำเข้าข้อมูล 40%")
+ * @param {string | null} label ต้องขึ้นต้นด้วย "กำลัง" เพื่อให้จุดสถานะเป็นสีเหลือง · null = เลิกใช้
+ */
+export function setActivityLabel(label) {
+  activityLabel = label || null;
+  if (activityLabel) setSyncStatus(activityLabel);
+}
+
 /**
  * เริ่มนับความคืบหน้า
  * @param {string} label ข้อความหน้าตัวเลข % เช่น "กำลังบันทึก"
@@ -889,7 +901,7 @@ async function performSave(keys) {
   try {
     const savedCollections = targets.filter((key) => DATA_COLLECTIONS.includes(key));
     // คำขอ: อ่านรหัสรุ่น 1 + เขียน (ปกติรวมเป็น batch เดียว) — ปรับตัวเลขจริงหลังวางแผนการเขียน
-    startProgress("กำลังบันทึก", 2);
+    startProgress(activityLabel || "กำลังบันทึก", 2);
     const remote = await readRemoteRevisions();
     const conflictingKeys = targets.filter(
       (key) => remote.revisions[key] && loadedRevisions[key] && remote.revisions[key] !== loadedRevisions[key],

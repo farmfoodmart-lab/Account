@@ -29,6 +29,7 @@ import { getFileDateStamp } from "../../src/utils/date.js";
 import { byId } from "../../src/utils/dom.js";
 import { downloadJson } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const settingsForms = [byId("settings-form"), byId("settings-features-form")];
 const supplierPaymentSelect = byId("settings-supplier-payment-method");
@@ -268,11 +269,12 @@ async function unlockPeriod() {
 /* ------------------------------------------------------------------ */
 
 /** ผลตรวจล่าสุด — คำนวณใหม่เฉพาะเมื่อรายการหรือวันที่ปิดงวดเปลี่ยน (รายการมีหลายหมื่น) */
-let documentNumberCheck = { entries: null, lockDate: null, plan: null };
+let documentNumberCheck = { entries: null, accounts: null, lockDate: null, plan: null };
 function getDocumentNumberPlan() {
   const lockDate = state.settings.lockDate || "";
-  if (documentNumberCheck.entries !== state.entries || documentNumberCheck.lockDate !== lockDate) {
-    documentNumberCheck = { entries: state.entries, lockDate, plan: planDocumentNumberRepair(state.entries) };
+  if (documentNumberCheck.entries !== state.entries || documentNumberCheck.accounts !== state.accounts
+    || documentNumberCheck.lockDate !== lockDate) {
+    documentNumberCheck = { entries: state.entries, accounts: state.accounts, lockDate, plan: planDocumentNumberRepair(state.entries) };
   }
   return documentNumberCheck.plan;
 }
@@ -300,13 +302,13 @@ async function repairDocumentNumbers() {
   const plan = getDocumentNumberPlan();
   if (!plan.changedCount) return;
   const message = [
-    "เรียงเลขที่เอกสาร JV-ปีเดือน-ลำดับ ใหม่ให้ตรงตามวันที่ เริ่ม 0001 ทุกเดือน ไม่ข้ามเลข",
+    "เรียงเลขที่เอกสาร รหัสเอกสาร-ปีเดือน-ลำดับ (เช่น JV / CUS / SUB) ใหม่ให้ตรงตามวันที่ เริ่ม 0001 ทุกเดือน ไม่ข้ามเลข รันแยกตามรหัสเอกสาร",
     `• เปลี่ยนเลขที่ ${formatNumber(plan.changedCount)} รายการ ใน ${formatNumber(plan.monthCount)} เดือน`,
     plan.descriptionUpdates ? `• แก้เลขที่ที่อ้างถึงในคำอธิบาย ${formatNumber(plan.descriptionUpdates)} รายการ` : null,
     plan.skippedLockedMonths.length
       ? `• ไม่แตะเดือนที่ปิดงวดแล้ว: ${plan.skippedLockedMonths.map((month) => `${month.slice(4)}/${month.slice(0, 4)}`).join(", ")}`
       : null,
-    "• เลขที่ที่พิมพ์เองแบบอื่น (ไม่ใช่ JV-ปีเดือน-ลำดับ) คงเดิม",
+    "• รหัสเอกสารคิดใหม่ตามบัญชีบรรทัดที่ 1 ของแต่ละรายการ (เช่น JV ที่ควรเป็น CUS) · เลขที่ที่พิมพ์เองแบบอื่น คงเดิม",
     "",
     "เลขที่เดิมของรายการจะเปลี่ยน แนะนำให้ดาวน์โหลดไฟล์สำรองก่อน (การ์ดสำรอง / กู้คืนข้อมูล ด้านล่าง)",
     "หากเปิดหน้าสมุดรายวันค้างไว้ ควรบันทึกหรือล้างฟอร์มที่กำลังกรอกก่อน",
@@ -426,6 +428,7 @@ byId("backup-export").addEventListener("click", downloadBackup);
 backupFileInput.addEventListener("change", restoreBackup);
 
 if (await loadData()) {
+  watchDocumentNumbers();
   renderSettingsPage();
   onDataRefresh(renderSettingsPage);
   const currentUser = await authReady;

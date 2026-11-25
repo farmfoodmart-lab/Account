@@ -18,6 +18,7 @@ import { getInitialMonthRange, rememberSelectedMonth } from "../../src/component
 import { byId } from "../../src/utils/dom.js";
 import { downloadCsv } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const yearSelect = byId("vat-year");
 const monthSelect = byId("vat-month");
@@ -247,6 +248,7 @@ monthSelect.addEventListener("change", handlePeriodChange);
 byId("vat-export").addEventListener("click", exportCsv);
 
 if (await loadData(["accounts", "entries", "customers", "suppliers"])) {
+  watchDocumentNumbers();
   renderPeriodPickers();
   renderVatPage();
   onDataRefresh(renderVatPage);

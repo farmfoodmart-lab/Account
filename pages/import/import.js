@@ -1,14 +1,14 @@
 /**
  * @file หน้า "นำเข้าไฟล์ Excel"
  *
- * ขั้นตอน: เลือกประเภทข้อมูล → เลือก/ลากไฟล์ → ดูตัวอย่าง → นำเข้า
+ * ขั้นตอน: เลือกประเภทข้อมูล → เลือก/ลากไฟล์ (ได้หลายไฟล์) → ดูตัวอย่าง → นำเข้าทีละไฟล์ตามลำดับ
  *
  * ตัวแปลงข้อมูล (parser) ของแต่ละประเภทเป็นฟังก์ชันบริสุทธิ์: รับแถวจาก Excel แล้วคืนข้อมูลชุดใหม่
  * โดยไม่แก้ state โดยตรง จากนั้นจึงบันทึกผ่าน commitChanges (ถ้าบันทึกไม่สำเร็จ state เดิมไม่เปลี่ยน)
  *
  * ต้องโหลดไลบรารี SheetJS (ตัวแปร XLSX) ในหน้า HTML ก่อนไฟล์นี้
  */
-import { commitChanges, loadData, state } from "../../src/core/store.js";
+import { commitChanges, loadData, setActivityLabel, setSyncStatus, state } from "../../src/core/store.js";
 import { ACCOUNT_TYPE_LABELS, AMOUNT_EPSILON } from "../../src/accounting/constants.js";
 import {
   createCustomerCodes,
@@ -17,7 +17,7 @@ import {
   parseCustomerOptionValue,
   resolvePartyText,
 } from "../../src/accounting/customers.js";
-import { createDocumentNumber, isDateLocked } from "../../src/accounting/journal.js";
+import { createDocumentNumber, getEntryDocumentPrefix, isDateLocked } from "../../src/accounting/journal.js";
 import { buildCreditSaleWithCostLines } from "../../src/accounting/posting.js";
 import { notifyError, notifySuccess } from "../../src/components/notifications.js";
 import { renderImportedFileList } from "../../src/components/imported-file-list.js";
@@ -25,6 +25,7 @@ import { toIsoDate } from "../../src/utils/date.js";
 import { byId } from "../../src/utils/dom.js";
 import { escapeHtml, formatDate, formatNumber } from "../../src/utils/format.js";
 import { createId } from "../../src/utils/id.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const importTypeSelect = byId("import-type");
 const fileInput = byId("import-file");
@@ -36,8 +37,9 @@ const previewContainer = byId("import-preview-view");
 /** จำนวนแถวที่แสดงในตัวอย่าง */
 const PREVIEW_ROW_LIMIT = 5;
 
-/** แถวที่อ่านได้จากไฟล์ล่าสุด (ล้างเมื่อเปลี่ยนไฟล์หรือประเภท) */
-let sheetRows = [];
+/** ไฟล์ที่อ่านแล้วพร้อมแถวข้อมูล (ล้างเมื่อเปลี่ยนไฟล์หรือประเภท) */
+/** @type {Array<{ file: File, rows: Array<Record<string, unknown>> }>} */
+let loadedFiles = [];
 
 /* ------------------------------------------------------------------ */
 /* ฟังก์ชันช่วยอ่านค่าจากแถว Excel                                        */
@@ -168,7 +170,7 @@ function parseCustomerCosts(rows, fileId) {
     newEntries.push({
       id: entryId,
       date: isoDate,
-      docNo: createDocumentNumber(state.entries, "JV", isoDate, "", reservedNumbers),
+      docNo: createDocumentNumber(state.entries, getEntryDocumentPrefix(posting.lines), isoDate, "", reservedNumbers), // รหัสเอกสารตามบัญชีบรรทัดที่ 1
       kind: "general",
       desc: `ขายสินค้าเชื่อ ${record.name}`.trim(),
       lines: posting.lines,
@@ -277,7 +279,7 @@ function parseReceivables(rows) {
 /**
  * รายการบัญชี: แต่ละแถวคือหนึ่งบรรทัด จัดกลุ่มเป็นรายการด้วยคอลัมน์ "อ้างอิง" หรือ "เลขที่เอกสาร"
  * - รายการที่ไม่ดุล มีน้อยกว่า 2 บรรทัด หรืออยู่ในงวดที่ล็อกแล้ว จะถูกข้าม
- * - รายการที่ไม่มีเลขที่เอกสาร (หรือเลขซ้ำ) จะได้เลข JV-YYYYMM-#### อัตโนมัติ
+#### อัตโนมัติ
  */
 function parseJournalEntries(rows) {
   const entryGroups = new Map();
@@ -312,7 +314,7 @@ function parseJournalEntries(rows) {
 
     const documentNumber = group.docNo && !usedNumbers.has(group.docNo)
       ? group.docNo
-      : createDocumentNumber(state.entries, "JV", group.date, "", usedNumbers);
+      : createDocumentNumber(state.entries, getEntryDocumentPrefix(group.lines), group.date, "", usedNumbers);
     usedNumbers.add(documentNumber);
     newEntries.push({ id: createId(), ...group, docNo: documentNumber, kind: "general", createdAt: new Date().toISOString() });
   });
@@ -360,117 +362,208 @@ async function readSpreadsheet(file) {
   return XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
 }
 
-function renderPreview(rows) {
-  if (!rows.length) {
-    previewContainer.innerHTML = '<p class="empty-state">ไม่พบข้อมูลในไฟล์</p>';
-    return;
-  }
-  const columnNames = Object.keys(rows[0]);
-  const headerCells = columnNames.map((columnName) => `<th>${escapeHtml(columnName)}</th>`).join("");
-  const bodyRows = rows.slice(0, PREVIEW_ROW_LIMIT)
-    .map((row) => `<tr>${columnNames.map((columnName) => `<td>${escapeHtml(row[columnName])}</td>`).join("")}</tr>`)
-    .join("");
-  previewContainer.innerHTML = `<div class="table-wrap"><table><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></div>
-    <p class="muted" style="margin-top:8px">แสดง ${formatNumber(Math.min(PREVIEW_ROW_LIMIT, rows.length))} จาก ${formatNumber(rows.length)} แถว</p>`;
+/**
+ * ตัวอย่างข้อมูลของแต่ละไฟล์
+ * @param {Array<{ file: File, rows: Array<Record<string, unknown>> }>} files
+ */
+function renderPreview(files) {
+  previewContainer.innerHTML = files.map(({ file, rows }) => {
+    const title = files.length > 1 ? `<h4 class="import-preview-title">${escapeHtml(file.name)}</h4>` : "";
+    if (!rows.length) return `${title}<p class="empty-state">ไม่พบข้อมูลในไฟล์</p>`;
+    const columnNames = Object.keys(rows[0]);
+    const headerCells = columnNames.map((columnName) => `<th>${escapeHtml(columnName)}</th>`).join("");
+    const bodyRows = rows.slice(0, PREVIEW_ROW_LIMIT)
+      .map((row) => `<tr>${columnNames.map((columnName) => `<td>${escapeHtml(row[columnName])}</td>`).join("")}</tr>`)
+      .join("");
+    return `${title}<div class="table-wrap"><table><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></div>
+      <p class="muted" style="margin:8px 0 18px">แสดง ${formatNumber(Math.min(PREVIEW_ROW_LIMIT, rows.length))} จาก ${formatNumber(rows.length)} แถว</p>`;
+  }).join("");
 }
 
-/** อ่านไฟล์ที่เลือก (ถ้ายังไม่ได้เลือกไฟล์หรืออ่านไม่สำเร็จ คืน null) */
-async function loadSelectedFile() {
-  const file = fileInput.files[0];
-  if (!file) {
+/** ไฟล์ที่เลือก (เรียงตามลำดับที่เลือก) */
+const getSelectedFiles = () => [...fileInput.files];
+
+/**
+ * อ่านไฟล์ที่เลือกทั้งหมด (ยังไม่ได้เลือกไฟล์ หรืออ่านไฟล์ใดไม่สำเร็จ → คืน null)
+ * @returns {Promise<Array<{ file: File, rows: Array<Record<string, unknown>> }> | null>}
+ */
+async function loadSelectedFiles() {
+  const files = getSelectedFiles();
+  if (!files.length) {
     notifyError("เลือกไฟล์ก่อน");
     return null;
   }
-  try {
-    sheetRows = await readSpreadsheet(file);
-    return file;
-  } catch (error) {
-    console.error(error);
-    notifyError(`อ่านไฟล์ไม่สำเร็จ: ${error.message || error}`);
-    return null;
+  const results = [];
+  for (const file of files) {
+    try {
+      results.push({ file, rows: await readSpreadsheet(file) });
+    } catch (error) {
+      console.error(error);
+      notifyError(`อ่านไฟล์ ${file.name} ไม่สำเร็จ: ${error.message || error}`);
+      return null;
+    }
   }
+  loadedFiles = results;
+  return results;
 }
 
 function handleFileSelected() {
-  const file = fileInput.files[0];
-  fileNameLabel.textContent = file ? file.name : "ลากไฟล์ Excel มาวางที่นี่";
-  dropZone.classList.toggle("has-file", Boolean(file));
-  sheetRows = [];
+  const files = getSelectedFiles();
+  fileNameLabel.textContent = !files.length
+    ? "ลากไฟล์ Excel มาวางที่นี่"
+    : files.length === 1 ? files[0].name : `${formatNumber(files.length)} ไฟล์: ${files.map((file) => file.name).join(", ")}`;
+  dropZone.classList.toggle("has-file", files.length > 0);
+  loadedFiles = [];
   previewContainer.innerHTML = "";
 }
 
 function handleImportTypeChanged() {
   const importType = IMPORT_TYPES[importTypeSelect.value];
   messageElement.textContent = importType ? `คอลัมน์ที่ต้องมี: ${importType.requiredColumns.join(", ")}` : "";
-  sheetRows = [];
+  loadedFiles = [];
   previewContainer.innerHTML = "";
 }
 
 async function showPreview() {
-  const file = await loadSelectedFile();
-  if (!file) return;
-  renderPreview(sheetRows);
-  messageElement.textContent = `อ่านได้ ${formatNumber(sheetRows.length)} แถว จากไฟล์ ${file.name}`;
+  const files = await loadSelectedFiles();
+  if (!files) return;
+  renderPreview(files);
+  const totalRows = files.reduce((sum, { rows }) => sum + rows.length, 0);
+  messageElement.textContent = files.length === 1
+    ? `อ่านได้ ${formatNumber(totalRows)} แถว จากไฟล์ ${files[0].file.name}`
+    : `อ่านได้ ${formatNumber(totalRows)} แถว จาก ${formatNumber(files.length)} ไฟล์`;
 }
 
 /* ------------------------------------------------------------------ */
 /* นำเข้าข้อมูล                                                          */
 /* ------------------------------------------------------------------ */
 
-async function runImport() {
-  let file = fileInput.files[0];
-  if (!file || !sheetRows.length) {
-    file = await loadSelectedFile();
-    if (!file) return;
+/** กำลังนำเข้าอยู่หรือไม่ (กันกดซ้ำ และเตือนเมื่อปิด/ออกจากหน้า) */
+let isImporting = false;
+const busyControls = [byId("import-preview"), byId("import-run"), importTypeSelect, fileInput];
+
+/**
+ * สถานะ "กำลังนำเข้าข้อมูล" ที่มุมล่างของเมนู (ตำแหน่งเดียวกับ "ซิงก์ข้อมูลแล้ว") และล็อกปุ่ม/ช่องเลือกไฟล์
+ * ระหว่างบันทึกแสดงเป็น "กำลังนำเข้าข้อมูล …%" แทน "กำลังบันทึก"
+ */
+function setImportingState(isBusy, progressText = "") {
+  isImporting = isBusy;
+  busyControls.forEach((control) => { control.disabled = isBusy; });
+  dropZone.classList.toggle("is-busy", isBusy);
+  dropZone.setAttribute("aria-disabled", String(isBusy));
+  byId("import-run").textContent = isBusy ? "กำลังนำเข้าข้อมูล…" : "นำเข้าข้อมูล";
+  setActivityLabel(isBusy ? `กำลังนำเข้าข้อมูล${progressText ? ` ${progressText}` : ""}` : null);
+}
+
+/** รอให้เบราว์เซอร์วาดสถานะก่อนเริ่มงานหนัก (แปลงข้อมูลหลายหมื่นแถวทำงานแบบ synchronous) */
+const waitForPaint = () => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+
+window.addEventListener("beforeunload", (event) => {
+  if (!isImporting) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
+/**
+ * นำเข้าไฟล์เดียว แล้วบันทึกทันที (ไฟล์ถัดไปจึงเห็นข้อมูลที่เพิ่งนำเข้า เช่น ชื่อซ้ำ / รหัสถัดไป)
+ * @returns {Promise<{ status: "ok" | "empty" | "failed", text: string, importedCount?: number }>} failed = บันทึกไม่สำเร็จ
+ */
+async function importOneFile(importTypeKey, { file, rows }) {
+  const importType = IMPORT_TYPES[importTypeKey];
+  const fileName = file.name || "ไฟล์นำเข้า";
+  if (!rows.length) return { status: "empty", text: `${fileName}: ไม่พบข้อมูลในไฟล์` };
+  const fileId = createId();
+  const {
+    changes, importedCount, postedCount, unpostedCount = 0, skippedLockedCount = 0, skippedDuplicateCount = 0,
+  } = importType.parse(rows, fileId);
+  const duplicateText = skippedDuplicateCount ? ` · ข้าม ${formatNumber(skippedDuplicateCount)} ชื่อที่มีอยู่แล้ว` : "";
+  if (!importedCount) {
+    return {
+      status: "empty",
+      text: skippedDuplicateCount
+        ? `${fileName}: ไม่มีรายชื่อใหม่ — ทุกชื่อในไฟล์มีอยู่แล้ว${duplicateText}`
+        : `${fileName}: ไม่พบข้อมูลที่นำเข้าได้ ตรวจสอบชื่อคอลัมน์อีกครั้ง`,
+    };
   }
-  if (!sheetRows.length) {
+  if (importType.tracksFile) {
+    changes.importFiles = [
+      ...state.importFiles,
+      { id: fileId, name: fileName, type: importTypeKey, count: importedCount, at: new Date().toISOString() },
+    ];
+  }
+  if (!(await commitChanges(changes))) return { status: "failed", text: `${fileName}: บันทึกไม่สำเร็จ` };
+
+  const postedText = importType.postsEntries ? ` · ลงบัญชีในสมุดรายวัน ${formatNumber(postedCount)} รายการ` : "";
+  const unpostedText = unpostedCount ? ` · ไม่ได้ลงบัญชี ${formatNumber(unpostedCount)} แถว (ไม่มีวันที่)` : "";
+  const skippedText = skippedLockedCount ? ` · ข้ามการลงบัญชี ${formatNumber(skippedLockedCount)} แถวที่อยู่ในงวดที่ปิดแล้ว` : "";
+  return {
+    status: "ok",
+    importedCount,
+    text: `นำเข้าสำเร็จ ${formatNumber(importedCount)} รายการ จากไฟล์ ${fileName}${postedText}${unpostedText}${skippedText}${duplicateText}`,
+  };
+}
+
+/** นำเข้าทุกไฟล์ที่เลือกตามลำดับ — ไฟล์ใดบันทึกไม่สำเร็จ → หยุด (ไฟล์ก่อนหน้าที่นำเข้าแล้วยังอยู่) */
+async function runImport() {
+  if (isImporting) return;
+  const files = loadedFiles.length ? loadedFiles : await loadSelectedFiles();
+  if (!files) return;
+  if (!files.some(({ rows }) => rows.length)) {
     notifyError("ไม่มีข้อมูลให้นำเข้า");
     return;
   }
 
   const importTypeKey = importTypeSelect.value;
-  const importType = IMPORT_TYPES[importTypeKey];
-  const fileId = createId();
-  const fileName = file.name || "ไฟล์นำเข้า";
-
+  const results = [];
+  let hasStopped = false;
   try {
-    const {
-      changes, importedCount, postedCount, unpostedCount = 0, skippedLockedCount = 0, skippedDuplicateCount = 0,
-    } = importType.parse(sheetRows, fileId);
-    const duplicateText = skippedDuplicateCount ? ` · ข้าม ${formatNumber(skippedDuplicateCount)} ชื่อที่มีอยู่แล้ว` : "";
-    if (!importedCount) {
-      messageElement.textContent = skippedDuplicateCount
-        ? `ไม่มีรายชื่อใหม่ — ทุกชื่อในไฟล์มีอยู่แล้ว${duplicateText}`
-        : "ไม่พบข้อมูลที่นำเข้าได้ ตรวจสอบชื่อคอลัมน์อีกครั้ง";
-      notifyError("ไม่มีแถวที่นำเข้าได้");
-      return;
+    for (const [index, loadedFile] of files.entries()) {
+      setImportingState(true, files.length > 1 ? `ไฟล์ ${formatNumber(index + 1)}/${formatNumber(files.length)}` : "");
+      await waitForPaint();
+      try {
+        const result = await importOneFile(importTypeKey, loadedFile);
+        results.push(result);
+        if (result.status === "failed") {
+          hasStopped = true;
+          break;
+        }
+      } catch (error) {
+        console.error(error);
+        results.push({ status: "error", text: `${loadedFile.file.name}: นำเข้าไม่สำเร็จ — ${error.message || error}` });
+        hasStopped = true;
+        break;
+      }
     }
-    if (importType.tracksFile) {
-      changes.importFiles = [
-        ...state.importFiles,
-        { id: fileId, name: fileName, type: importTypeKey, count: importedCount, at: new Date().toISOString() },
-      ];
-    }
+  } finally {
+    setImportingState(false);
+  }
 
-    if (!(await commitChanges(changes))) {
-      messageElement.textContent = "บันทึกไม่สำเร็จ";
-      return;
-    }
+  renderImportedFileList("all-imported-files");
+  const lines = results.map((result) => result.text);
+  const notImportedCount = files.length - results.length;
+  if (notImportedCount) lines.push(`หยุดนำเข้า — ยังไม่ได้นำเข้าอีก ${formatNumber(notImportedCount)} ไฟล์`);
+  messageElement.innerHTML = lines.map((line) => `<span class="import-result-line">${escapeHtml(line)}</span>`).join("");
 
-    renderImportedFileList("all-imported-files");
-    const postedText = importType.postsEntries ? ` · ลงบัญชีในสมุดรายวัน ${formatNumber(postedCount)} รายการ` : "";
-    const unpostedText = unpostedCount ? ` · ไม่ได้ลงบัญชี ${formatNumber(unpostedCount)} แถว (ไม่มีวันที่)` : "";
-    const skippedText = skippedLockedCount ? ` · ข้ามการลงบัญชี ${formatNumber(skippedLockedCount)} แถวที่อยู่ในงวดที่ปิดแล้ว` : "";
-    messageElement.textContent = `นำเข้าสำเร็จ ${formatNumber(importedCount)} รายการ จากไฟล์ ${fileName}${postedText}${unpostedText}${skippedText}${duplicateText}`;
-    notifySuccess(`นำเข้าข้อมูลเรียบร้อย ${formatNumber(importedCount)} รายการ`);
+  const importedTotal = results.reduce((sum, result) => sum + (result.importedCount || 0), 0);
+  const okCount = results.filter((result) => result.status === "ok").length;
+  if (importedTotal) {
+    notifySuccess(files.length > 1
+      ? `นำเข้าข้อมูลเรียบร้อย ${formatNumber(importedTotal)} รายการ จาก ${formatNumber(okCount)}/${formatNumber(files.length)} ไฟล์`
+      : `นำเข้าข้อมูลเรียบร้อย ${formatNumber(importedTotal)} รายการ`);
+  }
+  if (hasStopped) notifyError(results.at(-1).text, { title: "นำเข้าไม่สำเร็จ" });
+  else if (!importedTotal) notifyError("ไม่มีแถวที่นำเข้าได้");
+  // สถานะมุมล่างของเมนู: บันทึกไม่สำเร็จ → ระบบบันทึกแสดงข้อผิดพลาดไว้แล้ว / แปลงไฟล์ไม่สำเร็จ → แจ้งที่นี่
+  if (!hasStopped) setSyncStatus(importedTotal ? "นำเข้าข้อมูลแล้ว" : "ซิงก์ข้อมูลแล้ว");
+  else if (results.at(-1).status === "error") setSyncStatus("นำเข้าข้อมูลไม่สำเร็จ", true);
+
+  if (!hasStopped) {
+    // นำเข้าครบทุกไฟล์แล้ว → ล้างไฟล์ที่เลือก (ข้อความผลลัพธ์ยังแสดงอยู่)
     fileInput.value = "";
     handleFileSelected();
-  } catch (error) {
-    console.error(error);
-    messageElement.textContent = `นำเข้าไม่สำเร็จ: ${error.message || error}`;
-    notifyError(error.message || String(error), { title: "นำเข้าไม่สำเร็จ" });
   }
 }
+
 
 /* ------------------------------------------------------------------ */
 /* การลากไฟล์มาวาง (drag & drop)                                         */
@@ -478,9 +571,11 @@ async function runImport() {
 
 function setupDropZone() {
   dropZone.addEventListener("click", (event) => {
+    if (isImporting) return;
     if (event.target !== fileInput) fileInput.click();
   });
   dropZone.addEventListener("keydown", (event) => {
+    if (isImporting) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       fileInput.click();
@@ -497,15 +592,19 @@ function setupDropZone() {
   dropZone.addEventListener("drop", (event) => {
     event.preventDefault();
     dropZone.classList.remove("is-dragover");
-    const droppedFile = event.dataTransfer.files[0];
-    if (!droppedFile) return;
-    if (!/\.(xlsx|xls|csv)$/i.test(droppedFile.name)) {
-      notifyError("รองรับไฟล์ .xlsx, .xls หรือ .csv เท่านั้น");
-      return;
+    if (isImporting) return;
+    const droppedFiles = [...event.dataTransfer.files];
+    if (!droppedFiles.length) return;
+    const spreadsheetFiles = droppedFiles.filter((file) => /\.(xlsx|xls|csv)$/i.test(file.name));
+    if (spreadsheetFiles.length < droppedFiles.length) {
+      notifyError(spreadsheetFiles.length
+        ? `ข้าม ${formatNumber(droppedFiles.length - spreadsheetFiles.length)} ไฟล์ที่ไม่ใช่ .xlsx, .xls หรือ .csv`
+        : "รองรับไฟล์ .xlsx, .xls หรือ .csv เท่านั้น");
+      if (!spreadsheetFiles.length) return;
     }
     // ใส่ไฟล์ที่ลากมาลงใน <input type=file> เพื่อใช้เส้นทางเดียวกับการเลือกไฟล์ปกติ
     const transfer = new DataTransfer();
-    transfer.items.add(droppedFile);
+    spreadsheetFiles.forEach((file) => transfer.items.add(file));
     fileInput.files = transfer.files;
     fileInput.dispatchEvent(new Event("change", { bubbles: true }));
   });
@@ -522,6 +621,7 @@ const requestedType = new URLSearchParams(location.search).get("type");
 if (requestedType && IMPORT_TYPES[requestedType]) importTypeSelect.value = requestedType;
 
 if (await loadData()) {
+  watchDocumentNumbers();
   renderImportedFileList("all-imported-files");
   handleImportTypeChanged();
 }

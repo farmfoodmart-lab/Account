@@ -30,6 +30,9 @@
     </details>
     <div class="filter-bar">
       <div class="chips" id="subledger-status-filter"></div>
+      <label>ตั้งแต่ <input type="date" id="subledger-date-from" aria-label="วันที่เอกสาร ตั้งแต่"></label>
+      <label>ถึง <input type="date" id="subledger-date-to" aria-label="วันที่เอกสาร ถึง"></label>
+      <button type="button" id="subledger-date-clear" class="ghost" hidden>ล้างวันที่</button>
       <label class="grow" style="margin-left:auto;max-width:320px">ค้นหา <input type="search" id="subledger-search" placeholder="คู่ค้า / เลขที่ / คำอธิบาย"></label>
     </div>
     <div class="table-wrap"><table id="subledger-table"><thead><tr><th>คู่ค้า</th><th>เลขที่</th><th class="col-date">วันที่</th><th class="col-date">ครบกำหนด</th><th class="right">ยอดหนี้</th><th class="right">รับชำระแล้ว</th><th class="right">คงค้าง</th><th>สถานะ</th><th class="col-actions"></th></tr></thead><tbody></tbody></table></div>

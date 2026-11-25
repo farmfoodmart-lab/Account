@@ -7,6 +7,7 @@ import { commitChanges, loadData, onDataRefresh, state } from "../../src/core/st
 import { ACCOUNT_TYPE_LABELS, ACCOUNT_TYPE_ORDER } from "../../src/accounting/constants.js";
 import { isDebitNormal } from "../../src/accounting/rules.js";
 import { compareAccounts, renderAccountTypeBadge } from "../../src/accounting/accounts.js";
+import { normalizeDocumentPrefix } from "../../src/accounting/journal.js";
 import { calculateNetBalance, sumMovementsByAccount } from "../../src/accounting/statements.js";
 import { ACCOUNT_CODE_PREFIX, STANDARD_CHART_OF_ACCOUNTS } from "../../src/accounting/standard-chart.js";
 import { notifyError, notifySuccess, notify } from "../../src/components/notifications.js";
@@ -18,6 +19,7 @@ import { downloadCsv } from "../../src/utils/download.js";
 import { escapeHtml, formatAccounting, formatNumber } from "../../src/utils/format.js";
 import { createId } from "../../src/utils/id.js";
 import { debounce } from "../../src/utils/timing.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const accountForm = byId("account-form");
 const submitButton = byId("account-submit");
@@ -202,6 +204,7 @@ function renderAccountRow(account) {
   return `<tr>
     <td class="code">${escapeHtml(account.code)}</td>
     <td>${nameCell}</td>
+    <td class="col-doc-prefix"><input type="text" class="doc-prefix-input" data-doc-prefix="${escapeHtml(account.id)}" value="${escapeHtml(account.docPrefix || "")}" maxlength="10" placeholder="JV" autocapitalize="characters" spellcheck="false" aria-label="รหัสเอกสารของบัญชี ${escapeHtml(account.code)} ${escapeHtml(account.name)}" title="รหัสขึ้นต้นเลขที่เอกสาร เมื่อบัญชีนี้อยู่บรรทัดที่ 1 ของรายการ (ว่าง = JV)"></td>
     <td>${renderAccountTypeBadge(account.type)}</td>
     <td><span class="${isDebitSide ? "debit-text" : "credit-text"}">${isDebitSide ? "เดบิต (Dr)" : "เครดิต (Cr)"}</span></td>
     <td class="right">${lineCount ? formatNumber(lineCount) : '<span class="muted">-</span>'}</td>
@@ -216,7 +219,7 @@ function renderAccountRow(account) {
 function renderAccountTable() {
   renderTypeFilterChips();
   if (!state.accounts.length) {
-    tableBody.innerHTML = '<tr><td colspan="7" class="muted">ยังไม่มีบัญชี — กรอกฟอร์มด้านบน หรือกด “เพิ่มผังบัญชีมาตรฐาน” เพื่อเริ่มต้นอย่างรวดเร็ว</td></tr>';
+    tableBody.innerHTML = '<tr><td colspan="8" class="muted">ยังไม่มีบัญชี — กรอกฟอร์มด้านบน หรือกด “เพิ่มผังบัญชีมาตรฐาน” เพื่อเริ่มต้นอย่างรวดเร็ว</td></tr>';
     return;
   }
 
@@ -226,7 +229,7 @@ function renderAccountTable() {
     .filter((account) => !searchText || `${account.code} ${account.name}`.toLowerCase().includes(searchText))
     .sort(compareAccounts);
   if (!visibleAccounts.length) {
-    tableBody.innerHTML = '<tr><td colspan="7" class="muted">ไม่พบบัญชีที่ค้นหา</td></tr>';
+    tableBody.innerHTML = '<tr><td colspan="8" class="muted">ไม่พบบัญชีที่ค้นหา</td></tr>';
     return;
   }
 
@@ -236,7 +239,7 @@ function renderAccountTable() {
     const showGroupHeader = !selectedTypeFilter && account.type !== previousType;
     previousType = account.type;
     const groupHeader = showGroupHeader
-      ? `<tr class="group-head"><td colspan="7">${escapeHtml(ACCOUNT_TYPE_LABELS[account.type] || "อื่น ๆ")}</td></tr>`
+      ? `<tr class="group-head"><td colspan="8">${escapeHtml(ACCOUNT_TYPE_LABELS[account.type] || "อื่น ๆ")}</td></tr>`
       : "";
     return groupHeader + renderAccountRow(account);
   }).join("");
@@ -247,10 +250,11 @@ function exportCsv() {
     notifyError("ไม่มีบัญชีให้ส่งออก");
     return;
   }
-  const headers = ["รหัส", "ชื่อบัญชี", "หมวด", "ด้านปกติ", "จำนวนรายการ", "ยอดคงเหลือ"];
+  const headers = ["รหัส", "ชื่อบัญชี", "รหัสเอกสาร", "หมวด", "ด้านปกติ", "จำนวนรายการ", "ยอดคงเหลือ"];
   const rows = state.accounts.slice().sort(compareAccounts).map((account) => [
     account.code,
     account.name,
+    account.docPrefix || "",
     ACCOUNT_TYPE_LABELS[account.type] || account.type,
     isDebitNormal(account.type) ? "เดบิต" : "เครดิต",
     lineCountByAccountId.get(account.id) || 0,
@@ -275,6 +279,56 @@ tableBody.addEventListener("click", (event) => {
   }
 });
 
+/* ---------- รหัสเอกสาร (กรอกในตาราง) ---------- */
+/* บัญชีอยู่บรรทัดที่ 1 ของรายการ → เลขที่เอกสารขึ้นต้นด้วยรหัสนี้ เช่น CUS-202611-0001 (ว่าง = JV) */
+
+// พิมพ์แล้วแปลงเป็นตัวพิมพ์ใหญ่ ตัดอักขระที่ใช้ไม่ได้ (ใช้ได้ A-Z, 0-9)
+tableBody.addEventListener("input", (event) => {
+  const input = event.target.closest("[data-doc-prefix]");
+  if (!input) return;
+  const normalized = normalizeDocumentPrefix(input.value);
+  if (normalized !== input.value) input.value = normalized;
+  input.classList.remove("is-invalid");
+});
+// ออกจากช่อง / กด Enter → บันทึกทันที
+tableBody.addEventListener("change", async (event) => {
+  const input = event.target.closest("[data-doc-prefix]");
+  if (!input) return;
+  const account = state.accounts.find((item) => item.id === input.dataset.docPrefix);
+  if (!account) return;
+  const docPrefix = normalizeDocumentPrefix(input.value);
+  if (docPrefix === (account.docPrefix || "")) return;
+  // รหัสเอกสารห้ามซ้ำกับบัญชีอื่น (เลขที่เอกสารของสองบัญชีจะปนกัน)
+  const duplicateAccount = docPrefix && state.accounts.find((item) => item.id !== account.id
+    && normalizeDocumentPrefix(item.docPrefix) === docPrefix);
+  if (duplicateAccount) {
+    notifyError(`รหัสเอกสาร ${docPrefix} ถูกใช้แล้วที่บัญชี ${duplicateAccount.code} ${duplicateAccount.name} — รหัสเอกสารซ้ำกันไม่ได้`);
+    input.value = account.docPrefix || "";
+    input.classList.add("is-invalid");
+    input.focus();
+    return;
+  }
+  input.classList.remove("is-invalid");
+  const accounts = state.accounts.map((item) => {
+    if (item.id !== account.id) return item;
+    const { docPrefix: _previous, ...rest } = item;
+    return docPrefix ? { ...rest, docPrefix } : rest; // ว่าง = ลบฟิลด์ (Firestore ไม่รับ undefined)
+  });
+  if (await commitChanges({ accounts })) {
+    notifySuccess(docPrefix
+      ? `บัญชี ${account.code} ${account.name}: เลขที่เอกสารขึ้นต้นด้วย ${docPrefix}`
+      : `บัญชี ${account.code} ${account.name}: ใช้รหัสเอกสาร JV`);
+  } else {
+    input.value = account.docPrefix || "";
+  }
+});
+tableBody.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.matches("[data-doc-prefix]")) {
+    event.preventDefault();
+    event.target.blur();
+  }
+});
+
 byId("account-type-chips").addEventListener("click", (event) => {
   const chip = event.target.closest("[data-type]");
   if (!chip) return;
@@ -296,6 +350,7 @@ byId("account-template").addEventListener("click", addStandardChart);
 byId("account-export").addEventListener("click", exportCsv);
 
 if (await loadData(["accounts", "entries"])) {
+  watchDocumentNumbers();
   recalculateAccountUsage();
   resetForm();
   renderAccountTable();

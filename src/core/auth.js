@@ -14,10 +14,12 @@
  * ถ้าเคยล็อกอินบนเครื่องนี้แล้ว หน้าเว็บจะแสดงข้อมูลจากแคชได้เลย ระหว่างที่ Firebase ตรวจสอบสิทธิ์อยู่เบื้องหลัง
  */
 import {
+  EmailAuthProvider,
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
   firebaseAuth,
   onAuthStateChanged,
+  reauthenticateWithCredential,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -257,6 +259,43 @@ export function sendPasswordReset(identifier) {
     return Promise.reject(error);
   }
   return sendPasswordResetEmail(firebaseAuth, email);
+}
+
+/* ------------------------------------------------------------------ */
+/* ยืนยันตัวตนซ้ำก่อนทำงานสำคัญ (เช่น ลบไฟล์ที่นำเข้า)                     */
+/* ------------------------------------------------------------------ */
+
+/** ข้อความภาษาไทยเมื่อยืนยันตัวตนไม่ผ่าน */
+const VERIFY_ERROR_MESSAGES = {
+  "auth/invalid-credential": "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",
+  "auth/wrong-password": "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",
+  "auth/user-mismatch": "ต้องใช้ชื่อผู้ใช้ของบัญชีที่เข้าสู่ระบบอยู่",
+  "app/user-mismatch": "ต้องใช้ชื่อผู้ใช้ของบัญชีที่เข้าสู่ระบบอยู่",
+  "app/invalid-username": "รูปแบบชื่อผู้ใช้ไม่ถูกต้อง",
+  "app/not-signed-in": "ยังไม่ได้เข้าสู่ระบบ",
+  "auth/too-many-requests": "ลองผิดหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่",
+  "auth/network-request-failed": "เชื่อมต่ออินเทอร์เน็ตไม่ได้",
+};
+
+/** ข้อความภาษาไทยของข้อผิดพลาดจาก verifyCredentials */
+export function getVerifyErrorMessage(error) {
+  return VERIFY_ERROR_MESSAGES[error?.code] || `ยืนยันตัวตนไม่สำเร็จ: ${error?.message || error}`;
+}
+
+/**
+ * ตรวจชื่อผู้ใช้ (หรืออีเมล) และรหัสผ่านของผู้ใช้ที่เข้าสู่ระบบอยู่ กับ Firebase (ไม่ออกจากระบบ / ไม่เปลี่ยนผู้ใช้)
+ * @param {string} identifier ชื่อผู้ใช้ หรืออีเมล
+ * @param {string} password
+ * @returns {Promise<void>} ผ่าน = resolve · ไม่ผ่าน = reject (ใช้ getVerifyErrorMessage แปลงเป็นข้อความ)
+ */
+export async function verifyCredentials(identifier, password) {
+  const user = firebaseAuth.currentUser;
+  if (!user) throw Object.assign(new Error("not signed in"), { code: "app/not-signed-in" });
+  const email = toLoginEmail(identifier);
+  if (email !== String(user.email || "").toLowerCase()) {
+    throw Object.assign(new Error("user mismatch"), { code: "app/user-mismatch" });
+  }
+  await reauthenticateWithCredential(user, EmailAuthProvider.credential(email, password));
 }
 
 /** ออกจากระบบ ล้างแคชข้อมูลในเครื่อง แล้วกลับไปหน้าเข้าสู่ระบบ */

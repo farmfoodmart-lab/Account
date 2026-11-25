@@ -20,6 +20,7 @@ import { byId } from "../../src/utils/dom.js";
 import { downloadCsv } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
 import { debounce } from "../../src/utils/timing.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const accountTypeSelect = byId("ledger-type");
 const accountSelect = byId("ledger-account");
@@ -284,6 +285,7 @@ includeOpeningCheckbox.addEventListener("change", renderLedger);
 searchInput.addEventListener("input", debounce(renderLedger, 200));
 
 if (await loadData(["accounts", "entries"])) {
+  watchDocumentNumbers();
   const monthFilter = createMonthFilter({
     fromInput: fromDateInput,
     toInput: toDateInput,

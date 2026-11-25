@@ -14,6 +14,7 @@ import { confirmDialog } from "../../src/components/dialogs.js";
 import { renderImportedFileList } from "../../src/components/imported-file-list.js";
 import { byId } from "../../src/utils/dom.js";
 import { escapeHtml } from "../../src/utils/format.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const customerForm = byId("customer-form");
 const formTitle = byId("customer-form-title");
@@ -241,6 +242,7 @@ function renderPage() {
 }
 
 if (await loadData(["customers", "entries", "customerNames"])) {
+  watchDocumentNumbers();
   resetForm();
   renderPage();
   onDataRefresh(renderPage);

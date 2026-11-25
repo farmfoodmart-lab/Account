@@ -21,6 +21,7 @@ import { getFileDateStamp } from "../../src/utils/date.js";
 import { byId } from "../../src/utils/dom.js";
 import { downloadCsv } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney } from "../../src/utils/format.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const fromDateInput = byId("worksheet-from");
 const asOfDateInput = byId("worksheet-to");
@@ -172,6 +173,7 @@ byId("worksheet-export").addEventListener("click", exportCsv);
 [fromDateInput, asOfDateInput, includeOpeningCheckbox].forEach((input) => input.addEventListener("change", renderWorksheet));
 
 if (await loadData(["accounts", "entries"])) {
+  watchDocumentNumbers();
   const monthFilter = createMonthFilter({
     fromInput: fromDateInput,
     toInput: asOfDateInput,

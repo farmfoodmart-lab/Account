@@ -10,7 +10,7 @@ import { state } from "../core/store.js";
 import { createId } from "../utils/id.js";
 import { AMOUNT_EPSILON } from "./constants.js";
 import { findAccountById, findAccountForRole } from "./accounts.js";
-import { createDocumentNumber } from "./journal.js";
+import { createDocumentNumber, getEntryDocumentPrefix } from "./journal.js";
 
 /**
  * ปัดเศษเป็นทศนิยม 2 ตำแหน่ง (หน่วยสตางค์)
@@ -166,7 +166,7 @@ export function upsertJournalEntry(entries, { entryId, date, desc, lines, source
   entries.push({
     id: newEntryId,
     date,
-    docNo: createDocumentNumber(entries, "JV", date),
+    docNo: createDocumentNumber(entries, getEntryDocumentPrefix(lines), date), // รหัสเอกสารตามบัญชีบรรทัดที่ 1
     kind: "general",
     desc,
     lines,

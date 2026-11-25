@@ -31,7 +31,10 @@ import {
   toPartyText,
 } from "../../src/accounting/customers.js";
 import {
+  createDocumentNumber,
   createJournalNumber,
+  getEntryDocumentPrefix,
+  parseAutoDocumentNumber,
   getLockedPeriodMessage,
   isDateLocked,
 } from "../../src/accounting/journal.js";
@@ -48,6 +51,7 @@ import { downloadCsv } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
 import { createId } from "../../src/utils/id.js";
 import { debounce } from "../../src/utils/timing.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 /** จำนวนรายการที่แสดงต่อหน้า (กด "แสดงเพิ่ม" เพื่อดูต่อ) */
 const ENTRIES_PER_PAGE = 40;
@@ -187,6 +191,7 @@ function renumberLines() {
   getLineRows().forEach((row, index) => {
     row.querySelector(".journal-line-number").textContent = String(index + 1);
   });
+  refreshDocumentPrefix(); // บรรทัดที่ 1 อาจเปลี่ยน (เพิ่ม/ลบ/แทนที่บรรทัด)
 }
 
 /* ---------- ช่องบัญชีในแต่ละบรรทัด ---------- */
@@ -219,6 +224,7 @@ const getAccountInput = (row) => getAccountSearchInput(row) || row.querySelector
 function setLineAccount(row, accountId) {
   const account = accountId ? findAccountById(accountId) : null;
   row.querySelector(".journal-line-account").value = account ? accountId : "";
+  if (row === getLineRows()[0]) refreshDocumentPrefix();
   const searchInput = getAccountSearchInput(row);
   if (!searchInput) return;
   searchInput.value = account ? accountOptionLabel(account) : "";
@@ -568,22 +574,39 @@ function setEditingMode(isEditing, entryLabel = "") {
   cancelEditButton.hidden = !isEditing;
 }
 
-/** รูปแบบเลขที่อัตโนมัติ JV-YYYYMM-#### (กลุ่มที่ 1 = ปีเดือน) */
-const AUTO_DOCUMENT_NUMBER_PATTERN = /^JV-(\d{6})-\d+$/;
+/** บรรทัดที่ 1 ของฟอร์ม (ใช้หารหัสเอกสารจากผังบัญชี) */
+function getFirstLineForPrefix() {
+  const firstRow = getLineRows()[0];
+  return firstRow ? [{ accountId: firstRow.querySelector(".journal-line-account").value }] : [];
+}
 
 /**
- * เติมเลขที่เอกสารถัดไปตามเดือนของวันที่ที่เลือก
+ * บัญชีบรรทัดที่ 1 เปลี่ยน → รหัสเอกสารของเลขที่อัตโนมัติเปลี่ยนตาม (เช่น ลูกหนี้การค้า = CUS)
+ * ไม่แตะ: ตอนแก้ไขรายการเดิม และเลขที่ที่ผู้ใช้พิมพ์เอง · รหัสตรงอยู่แล้ว → ไม่ต้องสร้างเลขใหม่
+ */
+function refreshDocumentPrefix() {
+  if (editingEntryId || isDocumentNumberManual) return;
+  const currentNumber = parseAutoDocumentNumber(documentNumberInput.value.trim());
+  if (currentNumber && currentNumber.prefix === getEntryDocumentPrefix(getFirstLineForPrefix())) return;
+  suggestDocumentNumber();
+}
+
+/**
+ * เติมเลขที่เอกสารถัดไปตามเดือนของวันที่ และรหัสเอกสารของบัญชีบรรทัดที่ 1 (กรอกที่ผังบัญชี ไม่มี = JV)
  * - ผู้ใช้ยังไม่ได้พิมพ์เอง → สร้างเลขใหม่เสมอ
  * - เลขเดิมเป็นรูปแบบอัตโนมัติแต่คนละเดือนกับวันที่ (รวมถึงตอนแก้ไขรายการ) → เปลี่ยนเป็นเลขของเดือนใหม่
+ *   ตอนแก้ไขรายการคงรหัสเอกสารเดิมไว้
  * - เลขที่พิมพ์เองแบบอื่น หรือเดือนตรงกันอยู่แล้ว → คงไว้
  */
 function suggestDocumentNumber() {
   const currentNumber = documentNumberInput.value.trim();
-  const autoMatch = currentNumber.match(AUTO_DOCUMENT_NUMBER_PATTERN);
+  const autoNumber = parseAutoDocumentNumber(currentNumber);
   const selectedMonth = (toIsoDate(dateInput.value) || "").slice(0, 7).replace("-", "");
-  const isOtherMonth = Boolean(autoMatch && selectedMonth && autoMatch[1] !== selectedMonth);
+  const isOtherMonth = Boolean(autoNumber && selectedMonth && autoNumber.month !== selectedMonth);
   if (isDocumentNumberManual && !isOtherMonth) return;
-  documentNumberInput.value = createJournalNumber(dateInput.value, editingEntryId || "");
+  documentNumberInput.value = editingEntryId && autoNumber
+    ? createDocumentNumber(state.entries, autoNumber.prefix, dateInput.value, editingEntryId)
+    : createJournalNumber(dateInput.value, editingEntryId || "", getFirstLineForPrefix());
   if (isOtherMonth) isDocumentNumberManual = false;
 }
 
@@ -775,7 +798,7 @@ function readEntryForm() {
     };
   }
 
-  const documentNumber = documentNumberInput.value.trim() || createJournalNumber(dateInput.value, editingEntryId || "");
+  const documentNumber = documentNumberInput.value.trim() || createJournalNumber(dateInput.value, editingEntryId || "", lines);
   if (state.entries.some((entry) => entry.docNo === documentNumber && entry.id !== editingEntryId)) {
     return { error: `เลขที่เอกสาร ${documentNumber} ถูกใช้แล้ว`, focusElement: documentNumberInput };
   }
@@ -1275,6 +1298,14 @@ descriptionInput.addEventListener("keydown", (event) => {
   if (!descriptionInput.value.trim()) return; // ช่องบังคับ ยังว่างอยู่ → อยู่ที่ช่องนี้
   focusNextRequiredField({ submitIfComplete: true });
 });
+// ป้อนวันที่แล้วกด Enter → ไปช่องชื่อลูกค้า / ซัพพลายเออร์ / ชื่อรายการ (แทนการบันทึกฟอร์ม)
+// ช่องที่ผู้ใช้พิมพ์คือช่องข้อความที่ date-input.js ซ้อนไว้ (ตรวจรูปแบบวันที่ก่อน — ผิดรูปแบบ = preventDefault แล้วอยู่ที่ช่องเดิม)
+(dateInput.closest(".date-field")?.querySelector(".date-field-text") || dateInput).addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  if (!dateInput.value) return; // ช่องบังคับ ยังว่างอยู่ → อยู่ที่ช่องนี้
+  partyInput.focus();
+});
 // พิมพ์ชื่อเองแล้วกด Enter (ไม่ได้เลือกจากรายการ) → ไปช่องที่ต้องกรอกต่อ แทนการบันทึกฟอร์ม
 // (เลือกจากรายการด้วย Enter → combobox จัดการแล้ว และ onSelect ย้ายโฟกัสให้)
 partyInput.addEventListener("keydown", (event) => {
@@ -1301,6 +1332,10 @@ document.addEventListener("keydown", (event) => {
 // "input" = เปลี่ยนทันทีที่เลือกจากปฏิทิน, "change" = กันเบราว์เซอร์ที่ไม่ส่ง input
 dateInput.addEventListener("input", suggestDocumentNumber);
 dateInput.addEventListener("change", suggestDocumentNumber);
+// เลือกบัญชีบรรทัดที่ 1 จากรายการ (select) → รหัสเอกสารตามบัญชี (โหมดพิมพ์ค้นหาผ่าน setLineAccount แล้ว)
+linesContainer.addEventListener("change", (event) => {
+  if (event.target.matches(".journal-line-account") && event.target.closest(".journal-line") === getLineRows()[0]) refreshDocumentPrefix();
+});
 documentNumberInput.addEventListener("input", () => { isDocumentNumberManual = Boolean(documentNumberInput.value.trim()); });
 entryForm.addEventListener("input", () => { hasUnsavedChanges = true; });
 entryForm.addEventListener("keydown", handleFormShortcuts);
@@ -1320,6 +1355,7 @@ window.addEventListener("beforeunload", (event) => {
 /* ================================================================== */
 
 if (await loadData(["entries", "accounts", "customers", "suppliers", "customerNames", "autoDesc"])) {
+  watchDocumentNumbers();
   accountOptionsHtml = renderAccountOptions();
   // "เติมยอดแถวคู่อัตโนมัติ" เปิดทุกครั้งที่เข้าหน้า (ปิดได้ชั่วคราวระหว่างใช้งาน แต่เข้าหน้าใหม่จะเปิดอีก)
   autoMirrorSwitch.checked = true;

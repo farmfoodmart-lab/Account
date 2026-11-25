@@ -39,6 +39,7 @@ import { downloadCsv } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
 import { createId } from "../../src/utils/id.js";
 import { debounce } from "../../src/utils/timing.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 
 /**
@@ -582,6 +583,7 @@ byId("supplier-reset").addEventListener("click", () => setTimeout(() => {
 }));
 
 if (await loadData(["suppliers", "customers", "customerNames", "entries", "accounts", "autoDesc"])) {
+  watchDocumentNumbers();
   resetSupplierForm();
   // ลิงก์เดิม suppliers.html?name=... (ถูกส่งต่อมาหน้านี้) → ใส่ชื่อให้ลงทะเบียน
   const requestedName = new URLSearchParams(location.search).get("name");

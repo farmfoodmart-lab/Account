@@ -24,6 +24,7 @@ import {
 import { buildSubledger } from "../accounting/subledger.js";
 import { notifyError, notifySuccess } from "./notifications.js";
 import { formDialog } from "./dialogs.js";
+import { createMonthFilter } from "./month-filter.js";
 import { buildCsv } from "../utils/csv.js";
 import { daysBetween, getFileDateStamp, getTodayIso, toIsoDate } from "../utils/date.js";
 import { byId } from "../utils/dom.js";
@@ -31,7 +32,7 @@ import { downloadCsv } from "../utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../utils/format.js";
 import { debounce } from "../utils/timing.js";
 
-/** ข้อความที่ต่างกันระหว่างหน้าลูกหนี้กับหน้าเจ้าหนี้ */
+/** ข้อความและการเรียงลำดับที่ต่างกันระหว่างหน้าลูกหนี้กับหน้าเจ้าหนี้ */
 const PAGE_SETTINGS = {
   receivable: {
     legacyCollection: "receivables",
@@ -42,6 +43,10 @@ const PAGE_SETTINGS = {
     documentDescription: "ขายเชื่อ",
     settlementDescription: "รับชำระหนี้",
     cashFieldLabel: "รับเงินเข้าบัญชี",
+    // เรียงตามเลขที่เอกสาร (รหัสเอกสาร-ปีเดือน-ลำดับ) จากน้อยไปมาก — ไม่มีเลขที่ไว้ท้ายสุด
+    compareDocuments: (left, right) => (left.docNo ? 0 : 1) - (right.docNo ? 0 : 1)
+      || String(left.docNo || "").localeCompare(String(right.docNo || ""), "th-TH", { numeric: true })
+      || left.date.localeCompare(right.date),
   },
   payable: {
     legacyCollection: "payables",
@@ -52,6 +57,8 @@ const PAGE_SETTINGS = {
     documentDescription: "ซื้อเชื่อ",
     settlementDescription: "จ่ายชำระหนี้",
     cashFieldLabel: "จ่ายเงินจากบัญชี",
+    // เรียงตามวันครบกำหนด (ไม่มีวันครบกำหนดไว้ท้ายสุด)
+    compareDocuments: (left, right) => (left.due || "9999").localeCompare(right.due || "9999"),
   },
 };
 
@@ -72,6 +79,11 @@ export async function initSubledgerPage(subledgerType) {
   let expandedEntryId = null;
   /** ทะเบียนที่คำนวณล่าสุด (คำนวณใหม่ทุกครั้งที่วาดหน้า) */
   let subledger = { controlAccount: null, documents: [], parties: [] };
+  /** ช่องกรองวันที่เอกสาร (มีเฉพาะหน้าที่วางช่องไว้ เช่น หน้าลูกหนี้) — ว่าง = ไม่จำกัด */
+  const dateFromInput = byId("subledger-date-from");
+  const dateToInput = byId("subledger-date-to");
+  const dateClearButton = byId("subledger-date-clear");
+  const getDateRange = () => ({ from: dateFromInput?.value || "", to: dateToInput?.value || "" });
 
   /** @returns {"paid" | "overdue" | "pending"} */
   function getStatus(subledgerDocument, today) {
@@ -156,11 +168,15 @@ export async function initSubledgerPage(subledgerType) {
 
   function getVisibleDocuments(today) {
     const searchText = byId("subledger-search").value.trim().toLowerCase();
+    const { from, to } = getDateRange();
     return subledger.documents.filter((item) => {
       const status = getStatus(item, today);
       if (statusFilter === "open" && status === "paid") return false;
       if (statusFilter === "overdue" && status !== "overdue") return false;
       if (statusFilter === "paid" && status !== "paid") return false;
+      const documentDate = toIsoDate(item.date);
+      if (from && documentDate < from) return false;
+      if (to && documentDate > to) return false;
       return !searchText || `${item.partyName} ${item.docNo} ${item.desc}`.toLowerCase().includes(searchText);
     });
   }
@@ -212,6 +228,10 @@ export async function initSubledgerPage(subledgerType) {
 
   function renderPage() {
     subledger = buildSubledger(subledgerType);
+    if (dateClearButton) {
+      const { from, to } = getDateRange();
+      dateClearButton.hidden = !from && !to;
+    }
     const today = getTodayIso();
     renderLegacyMigrationBanner();
 
@@ -232,10 +252,10 @@ export async function initSubledgerPage(subledgerType) {
       return;
     }
     const visibleDocuments = getVisibleDocuments(today)
-      .sort((left, right) => (left.due || "9999").localeCompare(right.due || "9999"));
+      .sort(settings.compareDocuments);
     tableBody.innerHTML = visibleDocuments.length
       ? visibleDocuments.map((item) => renderDocumentRow(item, today)).join("")
-      : '<tr><td colspan="9" class="muted">ไม่มีรายการในสถานะนี้</td></tr>';
+      : '<tr><td colspan="9" class="muted">ไม่มีรายการตามตัวกรองนี้</td></tr>';
   }
 
   /* ---------------------------------------------------------------- */
@@ -406,7 +426,7 @@ export async function initSubledgerPage(subledgerType) {
 
   function exportCsv() {
     const today = getTodayIso();
-    const documents = getVisibleDocuments(today);
+    const documents = getVisibleDocuments(today).sort(settings.compareDocuments);
     if (!documents.length) {
       notifyError("ไม่มีรายการให้ส่งออก");
       return;
@@ -442,7 +462,36 @@ export async function initSubledgerPage(subledgerType) {
   byId("subledger-search").addEventListener("input", debounce(renderPage, 150));
   byId("subledger-export").addEventListener("click", exportCsv);
 
+  // กรองตามวันที่เอกสาร: ช่องตั้งแต่–ถึง + ตัวเลือกเดือน (เปิดหน้ามาแสดงทุกวันที่ เพื่อไม่ให้ยอดค้างเก่าถูกซ่อน)
+  let monthFilter = null;
+  if (dateFromInput && dateToInput) {
+    const handleDateChange = () => {
+      monthFilter?.sync();
+      renderPage();
+    };
+    dateFromInput.addEventListener("change", handleDateChange);
+    dateToInput.addEventListener("change", handleDateChange);
+    dateClearButton?.addEventListener("click", () => {
+      dateFromInput.value = "";
+      dateToInput.value = "";
+      handleDateChange();
+    });
+  }
+
   if (!(await loadData(["accounts", "entries", "customers", "suppliers", settings.legacyCollection]))) return;
   renderPage();
-  onDataRefresh(renderPage);
+  if (dateFromInput && dateToInput) {
+    // รายการเดือนมาจากวันที่ของเอกสารในทะเบียน
+    monthFilter = createMonthFilter({
+      fromInput: dateFromInput,
+      toInput: dateToInput,
+      getRecords: () => subledger.documents,
+      onSelect: renderPage,
+    });
+    monthFilter.refresh();
+  }
+  onDataRefresh(() => {
+    renderPage();
+    monthFilter?.refresh();
+  });
 }

@@ -16,6 +16,7 @@ import { getFileDateStamp } from "../../src/utils/date.js";
 import { byId } from "../../src/utils/dom.js";
 import { downloadCsv } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const fromDateInput = byId("trial-from");
 const asOfDateInput = byId("trial-to");
@@ -160,6 +161,7 @@ byId("trial-export").addEventListener("click", exportCsv);
 [fromDateInput, asOfDateInput, includeOpeningCheckbox, groupByTypeCheckbox, showMovementCheckbox].forEach((input) => input.addEventListener("change", renderTrialBalance));
 
 if (await loadData(["accounts", "entries"])) {
+  watchDocumentNumbers();
   const monthFilter = createMonthFilter({
     fromInput: fromDateInput,
     toInput: asOfDateInput,

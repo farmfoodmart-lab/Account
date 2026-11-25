@@ -15,10 +15,12 @@ import {
   writeBatch,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import {
+  EmailAuthProvider,
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
   getAuth,
   onAuthStateChanged,
+  reauthenticateWithCredential,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -71,11 +73,13 @@ export function createWriteBatch() {
 
 // ส่งต่อฟังก์ชันของ SDK ที่ไฟล์อื่นต้องใช้
 export {
+  EmailAuthProvider,
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
   deleteDoc,
   getDoc,
   onAuthStateChanged,
+  reauthenticateWithCredential,
   sendPasswordResetEmail,
   setDoc,
   signInWithEmailAndPassword,

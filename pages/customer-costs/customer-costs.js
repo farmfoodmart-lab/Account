@@ -11,6 +11,7 @@ import { notifyError, notifySuccess } from "../../src/components/notifications.j
 import { confirmDialog } from "../../src/components/dialogs.js";
 import { renderImportedFileList } from "../../src/components/imported-file-list.js";
 import { escapeHtml, formatDate, formatMoney } from "../../src/utils/format.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const tableBody = document.querySelector("#customer-costs-table tbody");
 
@@ -62,6 +63,7 @@ tableBody.addEventListener("click", async (event) => {
 });
 
 if (await loadData(["customerCosts", "entries"])) {
+  watchDocumentNumbers();
   renderCustomerCosts();
   renderImportedFileList("customer-cost-import-files", "customer_costs", renderCustomerCosts);
   onDataRefresh(renderCustomerCosts);

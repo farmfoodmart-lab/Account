@@ -17,6 +17,7 @@ import { createMonthFilter, getInitialMonthRange } from "../../src/components/mo
 import { byId } from "../../src/utils/dom.js";
 import { downloadCsv } from "../../src/utils/download.js";
 import { escapeHtml, formatAccounting, formatDate, formatMoney } from "../../src/utils/format.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 const startDateInput = byId("report-start-date");
 const endDateInput = byId("report-end-date");
@@ -240,6 +241,7 @@ function findMatchingPreset(period) {
 }
 
 if (await loadData(["accounts", "entries"])) {
+  watchDocumentNumbers();
   const monthFilter = createMonthFilter({
     fromInput: startDateInput,
     toInput: endDateInput,

@@ -4,6 +4,7 @@
  * - notify / notifySuccess : ป๊อปอัปเล็กกลางด้านบนของจอ แสดงสักครู่แล้วหายไปเอง (ไม่ขัดจังหวะการทำงาน)
  * - notifyError            : ป๊อปอัปกลางจอพร้อมปุ่ม "ตกลง" ผู้ใช้ต้องกดรับทราบ (ข้อผิดพลาดต้องไม่พลาดสายตา)
  * - logAlert               : เก็บการแจ้งเตือนที่ผิดปกติไว้ในกระดิ่งบนแถบเมนู (notifyError เรียกให้อัตโนมัติ)
+ * - setStandingAlert / clearStandingAlert : แจ้งเตือนแบบสถานะค้างในกระดิ่ง (เช่น มีรายการต้องซ่อมแซม) หายเองเมื่อแก้แล้ว
  *
  * ไฟล์นี้ไม่ import ไฟล์อื่นเลย จึงใช้ได้จากทุกชั้นของโปรเจกต์ (รวมถึง core/store.js)
  * กล่องรับป๊อปอัป <div id="toasts"> ถูกสร้างโดย app-shell.js (ถ้าไม่มี จะสร้างให้เอง)
@@ -56,6 +57,51 @@ export function logAlert(message, { title = "แจ้งเตือน" } = {}
     window.dispatchEvent(new Event(ALERT_CHANGED_EVENT));
   } catch {
     // เบราว์เซอร์ปิดการใช้ localStorage → ข้ามการเก็บประวัติ (ป๊อปอัปยังแสดงตามปกติ)
+  }
+}
+
+/**
+ * การแจ้งเตือนแบบ "สถานะค้าง" ในกระดิ่ง: มีได้รายการเดียวต่อ id อัปเดตแทนที่ ไม่ซ้อนกัน
+ * - ข้อความเปลี่ยน / เพิ่งเกิดใหม่ → ขึ้นเป็นยังไม่ได้อ่าน
+ * - ข้อความเดิม → คงสถานะอ่านแล้วไว้ (ไม่เด้งตัวเลขบนกระดิ่งซ้ำทุกครั้งที่เปิดหน้า)
+ * @param {string} id รหัสคงที่ของเรื่องนี้ เช่น "doc-number-repair"
+ * @param {string} message
+ * @param {{ title?: string, page?: string, pageTitle?: string }} [options] page = ลิงก์ไปหน้าที่แก้ไขได้
+ */
+export function setStandingAlert(id, message, { title = "แจ้งเตือน", page = location.pathname, pageTitle } = {}) {
+  try {
+    const alerts = JSON.parse(localStorage.getItem(ALERT_STORAGE_KEY) || "[]");
+    const existing = alerts.find((alert) => alert.id === id);
+    if (existing && existing.message === message && existing.title === title) return;
+    const alert = {
+      id,
+      time: Date.now(),
+      title,
+      message: String(message),
+      page,
+      pageTitle: pageTitle || document.title.split("·")[0].trim(),
+      read: false,
+    };
+    const otherAlerts = alerts.filter((item) => item.id !== id);
+    localStorage.setItem(ALERT_STORAGE_KEY, JSON.stringify([alert, ...otherAlerts].slice(0, MAX_ALERTS)));
+    window.dispatchEvent(new Event(ALERT_CHANGED_EVENT));
+  } catch {
+    // เบราว์เซอร์ปิดการใช้ localStorage → ข้าม
+  }
+}
+
+/**
+ * ลบการแจ้งเตือนแบบสถานะค้าง เมื่อปัญหาหายไปแล้ว
+ * @param {string} id
+ */
+export function clearStandingAlert(id) {
+  try {
+    const alerts = JSON.parse(localStorage.getItem(ALERT_STORAGE_KEY) || "[]");
+    if (!alerts.some((alert) => alert.id === id)) return;
+    localStorage.setItem(ALERT_STORAGE_KEY, JSON.stringify(alerts.filter((alert) => alert.id !== id)));
+    window.dispatchEvent(new Event(ALERT_CHANGED_EVENT));
+  } catch {
+    // เบราว์เซอร์ปิดการใช้ localStorage → ข้าม
   }
 }
 

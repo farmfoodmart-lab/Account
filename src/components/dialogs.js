@@ -161,3 +161,96 @@ export function formDialog({ title, message = "", fields, confirmText = "บั�
     if (firstInput) firstInput.focus();
   });
 }
+
+/**
+ * ปิดการแนะนำทุกแบบของเบราว์เซอร์และโปรแกรมจัดการรหัสผ่าน
+ * (ประวัติที่เคยพิมพ์ / ชื่อผู้ใช้-รหัสผ่านที่จำไว้ / "แนะนำรหัสผ่านที่รัดกุม")
+ */
+const NO_SUGGEST_ATTRIBUTES = 'autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"';
+
+/**
+ * กล่องยืนยันตัวตน: กรอกชื่อผู้ใช้และรหัสผ่านก่อนทำงานสำคัญ (เช่น ลบไฟล์ที่นำเข้า)
+ * ตรวจไม่ผ่าน → แสดงข้อความในกล่อง ให้กรอกใหม่ได้โดยไม่ต้องปิด
+ * @param {object} options
+ * @param {string} options.title หัวข้อ
+ * @param {string} [options.message] ข้อความอธิบาย
+ * @param {string} [options.confirmText="ยืนยัน"] ข้อความบนปุ่มยืนยัน
+ * @param {(username: string, password: string) => Promise<void>} options.verify ตรวจรหัส: reject = ไม่ผ่าน
+ * @param {(error: unknown) => string} [options.getErrorMessage] แปลงข้อผิดพลาดเป็นข้อความ
+ * @returns {Promise<boolean>} true เมื่อตรวจผ่าน · false เมื่อกดยกเลิก
+ */
+export function credentialDialog({ title, message = "", confirmText = "ยืนยัน", verify, getErrorMessage = (error) => String(error?.message || error) }) {
+  return new Promise((resolve) => {
+    // ไม่ให้เบราว์เซอร์เติมหรือแนะนำอะไรเลย — ต้องพิมพ์เองทุกครั้ง:
+    // - ชื่อช่องสุ่มทุกครั้ง + autocomplete=off + ป้ายให้โปรแกรมจัดการรหัสผ่านข้ามช่องนี้
+    // - ช่องรหัสผ่านเป็น type="text" ซ่อนตัวอักษรด้วย CSS (เบราว์เซอร์จึงไม่มองว่าเป็นฟอร์มล็อกอิน)
+    //   เบราว์เซอร์ที่ไม่รองรับการซ่อนด้วย CSS → ใช้ type="password" ตามปกติ
+    // - ช่องเป็น readonly จนกว่าจะคลิก/โฟกัส (เบราว์เซอร์ไม่เติมช่อง readonly)
+    const fieldPrefix = `verify-${Math.random().toString(36).slice(2)}`;
+    const maskWithCss = typeof CSS !== "undefined" && CSS.supports("-webkit-text-security", "disc");
+    const dialog = document.createElement("dialog");
+    dialog.className = "app-dialog";
+    dialog.setAttribute("aria-labelledby", "app-dialog-title");
+    dialog.innerHTML = `
+      <form method="dialog" autocomplete="off">
+        <div class="app-dialog-mark" aria-hidden="true">🔒</div>
+        <h2 id="app-dialog-title">${escapeAttribute(title)}</h2>
+        ${message ? `<p class="app-dialog-message">${escapeAttribute(message)}</p>` : ""}
+        <label class="field"><span>ชื่อผู้ใช้</span><input type="text" name="${fieldPrefix}-user" data-credential="username" ${NO_SUGGEST_ATTRIBUTES} autocapitalize="none" autocorrect="off" spellcheck="false" readonly required></label>
+        <label class="field"><span>รหัสผ่าน</span><input type="${maskWithCss ? "text" : "password"}" name="${fieldPrefix}-pass" data-credential="password" class="${maskWithCss ? "masked-input" : ""}" ${NO_SUGGEST_ATTRIBUTES} autocapitalize="none" autocorrect="off" spellcheck="false" readonly required></label>
+        <p class="app-dialog-error" role="alert" hidden></p>
+        <div class="app-dialog-actions">
+          <button type="button" class="secondary" data-cancel>ยกเลิก</button>
+          <button type="submit" value="confirm">${escapeAttribute(confirmText)}</button>
+        </div>
+      </form>`;
+
+    const form = dialog.querySelector("form");
+    const errorElement = dialog.querySelector(".app-dialog-error");
+    const submitButton = dialog.querySelector('button[value="confirm"]');
+    const usernameInput = dialog.querySelector("[data-credential=username]");
+    const passwordInput = dialog.querySelector("[data-credential=password]");
+    [usernameInput, passwordInput].forEach((input) => {
+      input.addEventListener("focus", () => { input.readOnly = false; });
+    });
+    let isVerified = false;
+
+    dialog.querySelector("[data-cancel]").addEventListener("click", () => dialog.close());
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault(); // ปิดกล่องเองเมื่อตรวจผ่านเท่านั้น
+      if (submitButton.disabled) return;
+      // ช่อง readonly ไม่ถูกตรวจ required โดยเบราว์เซอร์ → ตรวจเอง
+      const emptyInput = [usernameInput, passwordInput].find((input) => !input.value.trim());
+      if (emptyInput) {
+        errorElement.textContent = "กรอกชื่อผู้ใช้และรหัสผ่าน";
+        errorElement.hidden = false;
+        emptyInput.focus();
+        return;
+      }
+      submitButton.disabled = true;
+      errorElement.hidden = true;
+      try {
+        await verify(usernameInput.value.trim(), passwordInput.value);
+        isVerified = true;
+        dialog.close();
+      } catch (error) {
+        errorElement.textContent = getErrorMessage(error);
+        errorElement.hidden = false;
+        passwordInput.value = "";
+        passwordInput.focus();
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+    dialog.addEventListener("close", () => {
+      resolve(isVerified);
+      dialog.remove();
+    }, { once: true });
+
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    usernameInput.value = "";
+    passwordInput.value = "";
+    usernameInput.focus();
+  });
+}

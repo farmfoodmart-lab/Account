@@ -22,6 +22,7 @@ import { createMonthFilter, getInitialMonthRange } from "../../src/components/mo
 import { getLatestMonthRange, getTodayIso, toIsoDate } from "../../src/utils/date.js";
 import { byId } from "../../src/utils/dom.js";
 import { escapeHtml, formatAccounting, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
+import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
 
 /** สีของแต่ละช่วงอายุลูกหนี้ (ลำดับตรงกับ buildAgingBuckets) */
 const AGING_COLORS = ["var(--success)", "var(--warning)", "#d9822b", "var(--type-liability)", "var(--danger)"];
@@ -337,6 +338,7 @@ byId("dash-presets").addEventListener("click", (event) => {
 [fromDateInput, toDateInput].forEach((input) => input.addEventListener("change", renderDashboard));
 
 if (await loadData(DASHBOARD_COLLECTIONS)) {
+  watchDocumentNumbers();
   const monthFilter = createMonthFilter({
     fromInput: fromDateInput,
     toInput: toDateInput,

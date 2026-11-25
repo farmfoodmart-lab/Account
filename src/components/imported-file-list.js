@@ -1,12 +1,13 @@
 /**
- * @file ตาราง "ไฟล์ที่นำเข้า" พร้อมปุ่มลบไฟล์
+ * @file ตาราง "ไฟล์ที่นำเข้า" พร้อมปุ่มลบไฟล์ (ต้องกรอกชื่อผู้ใช้และรหัสผ่านทุกครั้ง)
  * ลบไฟล์ = ลบข้อมูลทุกแถวที่มาจากไฟล์นั้น และรายการในสมุดรายวันที่ไฟล์นั้นสร้างไว้ (entry.fileId)
  * ใช้ในหน้านำเข้าไฟล์ รายชื่อลูกค้า และเอกสารรับเข้า
  */
 import { commitChanges, state } from "../core/store.js";
 import { getLockedPeriodMessage, isDateLocked } from "../accounting/journal.js";
 import { notifyError, notifySuccess } from "./notifications.js";
-import { confirmDialog } from "./dialogs.js";
+import { credentialDialog } from "./dialogs.js";
+import { getVerifyErrorMessage, verifyCredentials } from "../core/auth.js";
 import { escapeHtml, formatNumber } from "../utils/format.js";
 
 /**
@@ -73,7 +74,15 @@ export function renderImportedFileList(containerId, fileTypeFilter, onFilesChang
       const keptText = keptRecords.length
         ? `\n• ${formatNumber(keptRecords.length)} รายชื่อที่มีรายการบัญชีอ้างอิงอยู่จะยังคงอยู่ในทะเบียน`
         : "";
-      if (!(await confirmDialog(`ยืนยันการลบไฟล์ "${importedFile.name}" และข้อมูลทั้งหมดที่นำเข้าจากไฟล์นี้${linkedText}?${keptText}`))) return;
+      // ลบไฟล์ต้องกรอกชื่อผู้ใช้และรหัสผ่านทุกครั้ง (ตรวจกับ Firebase ของผู้ใช้ที่เข้าสู่ระบบอยู่)
+      const isVerified = await credentialDialog({
+        title: "ยืนยันตัวตนเพื่อลบไฟล์",
+        message: `ลบไฟล์ "${importedFile.name}" และข้อมูลทั้งหมดที่นำเข้าจากไฟล์นี้${linkedText}${keptText}\n\nกรอกชื่อผู้ใช้และรหัสผ่านเพื่อยืนยัน`,
+        confirmText: "ลบไฟล์",
+        verify: verifyCredentials,
+        getErrorMessage: getVerifyErrorMessage,
+      });
+      if (!isVerified) return;
 
       const changes = { importFiles: state.importFiles.filter((file) => file.id !== fileId) };
       if (linkedEntries.length) changes.entries = state.entries.filter((entry) => entry.fileId !== fileId);
