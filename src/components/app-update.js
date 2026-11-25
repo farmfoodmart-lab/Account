@@ -31,8 +31,56 @@ let isBusy = false;
 /* เวอร์ชัน                                                              */
 /* ------------------------------------------------------------------ */
 
-function rawUrl(path) {
-  return `https://raw.githubusercontent.com/${UPDATE_REPO}/${UPDATE_BRANCH}/${path.split("/").map(encodeURIComponent).join("/")}`;
+/**
+ * URL ไฟล์บน GitHub
+ * @param {string} path
+ * @param {string} [ref] รหัส commit (ไฟล์ตายตัว ไม่ติดแคช) หรือชื่อ branch (แคชของ GitHub อาจช้าได้ถึง 5 นาที)
+ */
+function rawUrl(path, ref = UPDATE_BRANCH) {
+  return `https://raw.githubusercontent.com/${UPDATE_REPO}/${ref}/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/** เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ (ต่างจากข้อผิดพลาดอื่น เพื่อแจ้งผู้ใช้ได้ตรงสาเหตุ) */
+class NetworkError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "NetworkError";
+  }
+}
+
+/**
+ * fetch พร้อมแปลงข้อผิดพลาดให้อ่านเข้าใจ
+ * @param {string} url
+ * @param {{ bustCache?: boolean }} [options] bustCache = เติม ?t= กันแคช (ไม่ต้องใช้กับ URL ที่อ้าง commit)
+ */
+async function request(url, { bustCache = true } = {}) {
+  const target = bustCache ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}` : url;
+  let response;
+  try {
+    response = await fetch(target, { cache: "no-store" });
+  } catch (error) {
+    throw new NetworkError(`เชื่อมต่อ ${new URL(url).host} ไม่ได้ (${(error && error.message) || error})`);
+  }
+  if (!response.ok) {
+    const error = new Error(`HTTP ${response.status} — ${url}`);
+    error.status = response.status;
+    throw error;
+  }
+  return response;
+}
+
+/**
+ * รหัส commit ล่าสุดของ branch — ใช้อ่าน version.json และดาวน์โหลดไฟล์จาก commit เดียวกันทั้งหมด
+ * (ไม่ติดแคชของ GitHub และไม่ได้ไฟล์ปนกันระหว่างเวอร์ชัน)
+ * อ่านไม่ได้ (เช่น เกินโควตา API) → ใช้ชื่อ branch แทน
+ */
+async function getLatestCommitRef() {
+  try {
+    const commit = await fetchJson(`https://api.github.com/repos/${UPDATE_REPO}/commits/${UPDATE_BRANCH}`, { bustCache: false });
+    return typeof commit.sha === "string" && commit.sha ? commit.sha : UPDATE_BRANCH;
+  } catch {
+    return UPDATE_BRANCH;
+  }
 }
 
 /** @returns {-1 | 0 | 1} */
@@ -47,10 +95,8 @@ function compareVersions(left, right) {
   return 0;
 }
 
-async function fetchJson(url) {
-  const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`, { cache: "no-store" });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+async function fetchJson(url, options) {
+  return (await request(url, options)).json();
 }
 
 async function readLocalVersion() {
@@ -75,7 +121,8 @@ function isSafePath(path) {
  */
 async function listReleaseFiles(release) {
   if (Array.isArray(release.files) && release.files.length) return release.files;
-  const tree = await fetchJson(`https://api.github.com/repos/${UPDATE_REPO}/git/trees/${UPDATE_BRANCH}?recursive=1`);
+  const ref = release.ref || UPDATE_BRANCH;
+  const tree = await fetchJson(`https://api.github.com/repos/${UPDATE_REPO}/git/trees/${ref}?recursive=1`, { bustCache: false });
   if (!Array.isArray(tree.tree) || tree.truncated) throw new Error("อ่านรายชื่อไฟล์บน GitHub ไม่ครบ");
   return tree.tree.filter((node) => node.type === "blob").map((node) => node.path);
 }
@@ -151,20 +198,60 @@ function markUpdateAvailable(version) {
 
 /** @returns {Promise<object | null>} ข้อมูลเวอร์ชันใหม่ หรือ null ถ้าใช้เวอร์ชันล่าสุดแล้ว */
 async function fetchNewerRelease() {
+  const ref = await getLatestCommitRef();
   let release;
   try {
-    release = await fetchJson(rawUrl("version.json"));
+    release = await fetchJson(rawUrl("version.json", ref), { bustCache: ref === UPDATE_BRANCH });
   } catch (error) {
-    if (String(error && error.message).includes("404")) {
+    if (error && error.status === 404) {
       throw new Error(`ไม่พบข้อมูลเวอร์ชันบน GitHub (${UPDATE_REPO}) — repository ยังไม่ได้สร้าง ยังเป็น Private หรือยังไม่ได้ push version.json ขึ้น branch ${UPDATE_BRANCH}`);
     }
     throw error;
   }
   if (!release || !release.version) throw new Error("ข้อมูลเวอร์ชันบน GitHub ไม่ถูกต้อง");
-  return compareVersions(release.version, currentVersion) > 0 ? release : null;
+  // จำ commit ไว้ ดาวน์โหลดไฟล์จาก commit เดียวกับ version.json ที่อ่าน
+  return compareVersions(release.version, currentVersion) > 0 ? { ...release, ref } : null;
 }
 
-async function applyUpdate(release) {
+/** ดาวน์โหลดไฟล์เดียว ลองใหม่สูงสุด 3 ครั้ง (เครือข่ายสะดุด / GitHub ปฏิเสธชั่วคราว) */
+async function downloadFile(path, ref) {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await request(rawUrl(path, ref), { bustCache: ref === UPDATE_BRANCH });
+      return { path, data: await response.blob() };
+    } catch (error) {
+      lastError = error;
+      if (error && error.status === 404) break; // ไม่มีไฟล์จริง ลองใหม่ก็ไม่เจอ
+      await new Promise((resolve) => window.setTimeout(resolve, 600 * attempt));
+    }
+  }
+  throw new Error(`ดาวน์โหลดไฟล์ ${path} ไม่สำเร็จ: ${(lastError && lastError.message) || lastError}`);
+}
+
+/** ดาวน์โหลดทีละไม่กี่ไฟล์พร้อมกัน (ยิงพร้อมกันทั้งหมดอาจถูก GitHub ปฏิเสธ) */
+async function downloadAll(paths, ref, onProgress) {
+  const results = new Array(paths.length);
+  let nextIndex = 0;
+  let doneCount = 0;
+  const worker = async () => {
+    while (nextIndex < paths.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await downloadFile(paths[index], ref);
+      doneCount += 1;
+      onProgress(doneCount, paths.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, paths.length) }, worker));
+  return results;
+}
+
+/**
+ * @param {object} release ผลจาก fetchNewerRelease (มี ref = commit)
+ * @param {(text: string) => void} [onStatus] แสดงความคืบหน้า
+ */
+async function applyUpdate(release, onStatus = () => {}) {
   if (!window.showDirectoryPicker) {
     // เบราว์เซอร์นี้เขียนไฟล์ลงเครื่องเองไม่ได้ → ดาวน์โหลด ZIP ไปแตกทับแทน
     window.open(`https://github.com/${UPDATE_REPO}/archive/refs/heads/${UPDATE_BRANCH}.zip`, "_blank");
@@ -172,18 +259,19 @@ async function applyUpdate(release) {
     return;
   }
   const folder = await getAppFolder();
+  // โฟลเดอร์พัฒนาโปรแกรม (มี .git) → ห้ามเขียนทับ ไม่เช่นนั้นงานที่ยังไม่ได้ commit จะหาย
+  const isGitFolder = await folder.getDirectoryHandle(".git").then(() => true, () => false);
+  if (isGitFolder) throw new Error("โฟลเดอร์นี้เป็นโฟลเดอร์พัฒนาโปรแกรม (มี .git) ระบบจะไม่เขียนทับ เพื่อไม่ให้งานที่ยังไม่ได้ commit หาย — ใช้ git pull แทน");
   const files = await listReleaseFiles(release);
   if (!files.length || !files.every(isSafePath)) throw new Error("รายการไฟล์ในเวอร์ชันใหม่ไม่ถูกต้อง");
 
   // ดาวน์โหลดครบทุกไฟล์ก่อน ถ้าไฟล์ใดล้มเหลวจะไม่เขียนทับอะไรเลย
-  notify(`กำลังดาวน์โหลด ${files.length} ไฟล์...`);
-  const downloads = await Promise.all(files.map(async (path) => {
-    const response = await fetch(`${rawUrl(path)}?t=${Date.now()}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`ดาวน์โหลดไฟล์ ${path} ไม่สำเร็จ`);
-    return { path, data: await response.blob() };
-  }));
+  const downloads = await downloadAll(files, release.ref || UPDATE_BRANCH, (done, total) => {
+    onStatus(`กำลังดาวน์โหลด ${done}/${total}...`);
+  });
   // version.json เขียนเป็นไฟล์สุดท้าย: ถ้าเขียนไม่ครบ เวอร์ชันในเครื่องยังเป็นเวอร์ชันเดิม (กดอัปเดตซ้ำได้)
   downloads.sort((left, right) => (left.path === "version.json") - (right.path === "version.json"));
+  onStatus("กำลังติดตั้ง...");
   for (const file of downloads) await writeFile(folder, file.path, file.data);
 
   notifySuccess(`อัปเดตเป็น v${release.version} แล้ว กำลังเปิดโปรแกรมใหม่...`);
@@ -191,9 +279,10 @@ async function applyUpdate(release) {
 }
 
 function reportUpdateError(error, title = "อัปเดตไม่สำเร็จ") {
+  console.error(title, error);
   if (error && error.name === "AbortError") notify("ยกเลิกการอัปเดต");
-  else if (error instanceof TypeError) notifyError("เชื่อมต่อ GitHub ไม่ได้ กรุณาตรวจสอบอินเทอร์เน็ต", { title });
-  else notifyError(error && error.message ? error.message : "อัปเดตไม่สำเร็จ", { title });
+  else if (error instanceof NetworkError) notifyError(`${error.message}\nกรุณาตรวจสอบอินเทอร์เน็ต แล้วลองใหม่อีกครั้ง`, { title });
+  else notifyError((error && error.message) || String(error) || "อัปเดตไม่สำเร็จ", { title });
 }
 
 /* ------------------------------------------------------------------ */
@@ -255,7 +344,7 @@ function showUpdateCard(release) {
     laterButton.disabled = true;
     updateButton.textContent = "กำลังอัปเดต...";
     try {
-      await applyUpdate(release);
+      await applyUpdate(release, (text) => { updateButton.textContent = text; });
       closeUpdateCard();
     } catch (error) {
       updateButton.disabled = false;

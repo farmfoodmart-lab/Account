@@ -65,13 +65,53 @@ export async function rememberUser(user) {
 }
 
 /**
+ * ⚠️ ปิดระบบล็อกอินไว้ชั่วคราว: ไม่แสดงหน้าเข้าสู่ระบบ เข้าบัญชีกลาง (admin) ให้อัตโนมัติ
+ * (Firestore อนุญาตเฉพาะผู้ใช้ที่ล็อกอินแล้ว จึงยังต้องล็อกอิน แต่ทำให้เองเบื้องหลัง)
+ * รหัสผ่านอยู่ในไฟล์ account.passwod ที่โฟลเดอร์โปรแกรม (ไม่ขึ้น GitHub เพราะอยู่ใน .gitignore)
+ * ใช้คำสุดท้ายในไฟล์เป็นรหัสผ่าน — เครื่องที่ไม่มีไฟล์นี้จะใช้หน้าล็อกอินตามปกติ
+ * เปิดระบบล็อกอินกลับ: เปลี่ยนเป็น false
+ */
+const AUTO_LOGIN_ENABLED = true;
+const PASSWORD_FILE_NAMES = ["account.passwod", "account.password"];
+
+/** อ่านรหัสผ่านจากไฟล์ในโฟลเดอร์โปรแกรม @returns {Promise<string>} */
+async function readAutoLoginPassword() {
+  for (const fileName of PASSWORD_FILE_NAMES) {
+    try {
+      const response = await fetch(new URL(`../../${fileName}`, import.meta.url), { cache: "no-store" });
+      if (!response.ok) continue;
+      const words = (await response.text()).trim().split(/\s+/);
+      if (words[words.length - 1]) return words[words.length - 1];
+    } catch {
+      // ไม่มีไฟล์ → ลองชื่อถัดไป
+    }
+  }
+  return "";
+}
+
+/** @returns {Promise<object | null>} ผู้ใช้ที่ล็อกอินอัตโนมัติ หรือ null ถ้าทำไม่ได้ */
+async function autoSignIn() {
+  if (!AUTO_LOGIN_ENABLED) return null;
+  try {
+    const password = await readAutoLoginPassword();
+    if (!password) return null;
+    return await signIn(SHARED_ACCOUNT_USERNAME, password);
+  } catch (error) {
+    console.warn("ล็อกอินอัตโนมัติไม่สำเร็จ ใช้หน้าเข้าสู่ระบบแทน", error);
+    return null;
+  }
+}
+
+/**
  * Promise ที่ได้ผู้ใช้ปัจจุบัน (หรือ null) เมื่อ Firebase Auth โหลดสถานะเสร็จ
+ * ยังไม่ได้ล็อกอิน → ลองล็อกอินอัตโนมัติก่อน (ถ้าเปิดไว้)
  * @type {Promise<import("https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js").User | null>}
  */
 export const authReady = new Promise((resolve) => {
   const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
     unsubscribe();
-    resolve(user);
+    if (user || isOnLoginPage()) resolve(user);
+    else autoSignIn().then(resolve);
   });
 });
 
@@ -96,7 +136,12 @@ function showSignedInEmail(user) {
 // ติดตามสถานะตลอดอายุหน้า: ถ้าหลุดจากระบบ (เช่น ออกจากระบบจากอีกแท็บ) ให้กลับไปหน้าเข้าสู่ระบบ
 onAuthStateChanged(firebaseAuth, (user) => {
   showSignedInEmail(user);
-  if (!user) redirectToLogin();
+  if (user) return;
+  // ปิดระบบล็อกอินไว้: ล็อกอินอัตโนมัติก่อน ทำไม่ได้จึงไปหน้าเข้าสู่ระบบ
+  // if (!user) redirectToLogin();
+  authReady.then((readyUser) => {
+    if (!readyUser && !firebaseAuth.currentUser) redirectToLogin();
+  });
 });
 
 /* ------------------------------------------------------------------ */

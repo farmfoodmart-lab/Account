@@ -30,16 +30,17 @@ export function findSupplierById(supplierId) {
 }
 
 /**
- * เรียงให้รายการที่เพิ่มเอง (ไม่ได้มาจากไฟล์นำเข้า) ขึ้นก่อน โดยรายการล่าสุดอยู่บนสุด
- * → ชื่อที่เพิ่งเพิ่มเห็นได้ทันทีที่หัวรายการตัวเลือก แม้จะมีรายชื่อจากไฟล์หลายพันราย
- * (รายการใหม่ต่อท้ายอาร์เรย์เสมอ ท้ายอาร์เรย์ = ล่าสุด)
- * @template T
+ * เรียงตามรหัส (C001, C002, ... C1000 — เทียบตัวเลขในรหัส) รายการที่ไม่มีรหัสต่อท้ายตามลำดับเดิม
+ * ใช้เรียงตัวเลือกลูกค้า/ซัพพลายเออร์ในทุกช่องเลือก
+ * @template {{ code?: string }} T
  * @param {T[]} records
  * @returns {T[]}
  */
-function newestManualFirst(records) {
-  const manual = records.filter((record) => !record.fileId).reverse();
-  return [...manual, ...records.filter((record) => record.fileId)];
+function sortByCode(records) {
+  const coded = records.filter((record) => String(record.code || "").trim());
+  const uncoded = records.filter((record) => !String(record.code || "").trim());
+  coded.sort((left, right) => String(left.code).trim().localeCompare(String(right.code).trim(), "en", { numeric: true, sensitivity: "base" }));
+  return [...coded, ...uncoded];
 }
 
 /** ลูกค้าและเจ้าหนี้ในทะเบียนทั้งหมด */
@@ -65,8 +66,7 @@ export function formatCustomerLabel(customer) {
  */
 export function renderCustomerOptions() {
   const toOption = (party) => `<option value="id:${escapeHtml(party.id)}">${escapeHtml(formatCustomerLabel(party))}</option>`;
-  const registeredOptions = state.customers.filter((customer) => formatCustomerLabel(customer)).map(toOption);
-  const supplierOptions = newestManualFirst(state.suppliers || []).filter((supplier) => formatCustomerLabel(supplier)).map(toOption);
+  const supplierOptions = sortByCode(state.suppliers || []).filter((supplier) => formatCustomerLabel(supplier)).map(toOption);
 
   const registeredNames = new Set(getRegisteredParties().map((party) => (party.name || "").trim()));
   const listedNames = new Set();
@@ -76,10 +76,12 @@ export function renderCustomerOptions() {
     listedNames.add(name);
     return `<option value="name:${escapeHtml(name)}">${escapeHtml(name)}</option>`;
   };
-  // ลูกค้าที่เพิ่มเอง (ล่าสุดก่อน) → ทะเบียนเดิม → รายชื่อจากไฟล์
-  const manualNameOptions = newestManualFirst(state.customerNames).filter((record) => !record.fileId).map(toNameOption);
-  const fileNameOptions = state.customerNames.filter((record) => record.fileId).map(toNameOption);
-  const customerOptions = [...manualNameOptions, ...registeredOptions, ...fileNameOptions].join("");
+  // ลูกค้าทั้งทะเบียนเดิมและรายชื่อลูกค้า เรียงรวมกันตามรหัส
+  const customerOptions = sortByCode([...state.customers, ...state.customerNames])
+    .map((record) => (record.id && state.customers.includes(record)
+      ? (formatCustomerLabel(record) ? toOption(record) : "")
+      : toNameOption(record)))
+    .join("");
   if (!supplierOptions.length) return customerOptions;
   // มีทะเบียนเจ้าหนี้ → แบ่งกลุ่มให้เลือกง่าย
   return `<optgroup label="ลูกค้า">${customerOptions}</optgroup>`
@@ -374,23 +376,21 @@ export function getPartyOptions() {
     .filter((name) => !registeredNames.has(name))
     .forEach((name) => add(`name:${name}`, name, group, "เคยใช้"));
 
-  // 1. ชื่อลูกค้า: ที่เพิ่มเอง (ล่าสุดก่อน) → ทะเบียนลูกค้า → รายชื่อจากไฟล์ → ชื่อที่เคยใช้
-  //    (รายการแสดงได้จำกัดต่อกลุ่ม ชื่อที่เพิ่งเพิ่มจึงต้องอยู่บนสุด ไม่เช่นนั้นจะหลุดท้ายรายการ)
-  const addCustomerName = (record) => {
+  // 1. ชื่อลูกค้า: ทะเบียนลูกค้า + รายชื่อลูกค้า เรียงรวมกันตามรหัส → ชื่อที่เคยใช้ (ไม่มีรหัส) ต่อท้าย
+  sortByCode([...state.customers, ...state.customerNames]).forEach((record) => {
+    if (record.id && state.customers.includes(record)) {
+      const label = formatCustomerLabel(record);
+      if (label) add(`id:${record.id}`, label, PARTY_GROUPS.customer, record.tax || "");
+      return;
+    }
     const name = (record.name || "").trim();
     if (!name || registeredNames.has(name)) return;
     add(`name:${name}`, name, PARTY_GROUPS.customer, record.code || "");
-  };
-  newestManualFirst(state.customerNames).filter((record) => !record.fileId).forEach(addCustomerName);
-  state.customers.forEach((customer) => {
-    const label = formatCustomerLabel(customer);
-    if (label) add(`id:${customer.id}`, label, PARTY_GROUPS.customer, customer.tax || "");
   });
-  state.customerNames.filter((record) => record.fileId).forEach(addCustomerName);
   addUsedNames(usedNames.customerNames, PARTY_GROUPS.customer);
 
-  // 2. ชื่อซัพพลายเออร์: ทะเบียนเจ้าหนี้ (ที่เพิ่มเองล่าสุดก่อน) → ชื่อที่เคยใช้กับเจ้าหนี้การค้า
-  newestManualFirst(state.suppliers || []).forEach((supplier) => {
+  // 2. ชื่อซัพพลายเออร์: ทะเบียนเจ้าหนี้ เรียงตามรหัส → ชื่อที่เคยใช้กับเจ้าหนี้การค้า
+  sortByCode(state.suppliers || []).forEach((supplier) => {
     const label = formatCustomerLabel(supplier);
     if (label) add(`id:${supplier.id}`, label, PARTY_GROUPS.supplier, supplier.tax || "");
   });

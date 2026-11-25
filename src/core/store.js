@@ -810,6 +810,55 @@ export function onDataRefresh(callback) {
 }
 
 /**
+ * ตรวจข้อมูลใหม่อีกครั้ง เมื่อหน้าถูกแสดงจริงหลังจากโหลดไว้ล่วงหน้า
+ *
+ * เมนูด้านข้าง prerender หน้าถัดไปตอนชี้เมาส์ (app-shell.js) — หน้านั้นอ่านข้อมูลไว้ "ก่อน" ผู้ใช้คลิก
+ * ถ้าระหว่างนั้นผู้ใช้เพิ่มข้อมูลในหน้าปัจจุบัน (เช่น เพิ่มลูกค้า) หน้าที่โหลดไว้จะยังเป็นข้อมูลเก่า
+ * → ตอนแสดงหน้า: ใช้ข้อมูลในแคชที่ใหม่กว่า (หน้าก่อนหน้าเพิ่งบันทึก) แล้วตรวจกับเซิร์ฟเวอร์ซ้ำ
+ * ใช้กับหน้าที่เบราว์เซอร์เก็บไว้ (กดย้อนกลับ / bfcache) ด้วย
+ */
+async function refreshAfterPageShown() {
+  if (pendingSync) await pendingSync;
+  if (!isSynced || hasPendingSave()) return;
+  const collections = [...loadedCollections];
+  if (!collections.length) return;
+  const cacheEntries = await readCacheEntries([...collections, META_KEY]);
+
+  // แคชใหม่กว่าข้อมูลในหน้า (รหัสรุ่นต่างกัน) → ใช้ข้อมูลในแคชทันที
+  const changedKeys = collections.filter((key) => cacheEntries[key] && cacheEntries[key].revision
+    && cacheEntries[key].revision !== loadedRevisions[key]);
+  const isMetaChanged = Boolean(cacheEntries.meta && cacheEntries.meta.revision
+    && cacheEntries.meta.revision !== loadedRevisions[META_KEY]);
+  if (changedKeys.length || isMetaChanged) {
+    const nextData = { ...state };
+    changedKeys.forEach((key) => {
+      nextData[key] = cacheEntries[key].items;
+      chunkCounts[key] = cacheEntries[key].chunks || 0;
+      loadedRevisions[key] = cacheEntries[key].revision;
+      rememberServerChunksFromCache(key, cacheEntries[key]);
+    });
+    if (isMetaChanged) {
+      nextData.settings = cacheEntries.meta.settings;
+      nextData.importFiles = cacheEntries.meta.importFiles;
+      loadedRevisions[META_KEY] = cacheEntries.meta.revision;
+    }
+    state = normalizeState(nextData);
+    const keys = [...changedKeys, ...(isMetaChanged ? [META_KEY] : [])];
+    rememberConfirmed(keys);
+    window.dispatchEvent(new CustomEvent(DATA_REFRESH_EVENT, { detail: { keys } }));
+  }
+  // แคชอาจยังไม่ทันเขียน (เพิ่งบันทึกเสร็จ) → ตรวจกับเซิร์ฟเวอร์อีกรอบ ได้ข้อมูลใหม่จะวาดหน้าใหม่ให้เอง
+  pendingSync = syncWithServer(collections, cacheEntries, true);
+}
+
+if (document.prerendering) {
+  document.addEventListener("prerenderingchange", () => { refreshAfterPageShown(); }, { once: true });
+}
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) refreshAfterPageShown();
+});
+
+/**
  * บันทึกจริงหนึ่งครั้ง (เรียกผ่านคิวใน saveData เท่านั้น)
  * - ปฏิเสธการบันทึก ถ้าเครื่องอื่นแก้ชุดข้อมูลเดียวกันหลังจากที่เราโหลดมา แล้วโหลดข้อมูลล่าสุดมาแทน
  * @param {string[]} [keys]

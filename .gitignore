@@ -4,3 +4,7 @@ npm-debug.log*
 # Windows: ไอคอนโฟลเดอร์และ shortcut ในเครื่อง
 desktop.ini
 *.lnk
+
+# ไฟล์รหัสผ่านในเครื่อง (ห้ามขึ้น GitHub)
+account.passwod
+account.password
