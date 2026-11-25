@@ -216,14 +216,14 @@ function renderPage() {
       + `<button type="button" class="small secondary" data-action="edit" ${target}>แก้ไข</button> `
       + `<button type="button" class="small danger" data-action="delete" ${target}>ลบ</button>`;
     return `<tr>
-      <td class="code">${row.isRegistered ? escapeHtml(row.code || "-") : '<span class="badge">ยังไม่ลงทะเบียน</span>'}</td>
+      <td class="code center">${row.isRegistered ? escapeHtml(row.code || "-") : '<span class="badge">ยังไม่ลงทะเบียน</span>'}</td>
       <td>${nameHtml}</td>
       <td>${escapeHtml(row.contact)}</td>
       <td>${escapeHtml(row.phone)}</td>
       <td class="code">${escapeHtml(row.tax)}</td>
-      <td class="right">${row.creditDays === "" || row.creditDays == null ? '<span class="muted">-</span>' : `${escapeHtml(row.creditDays)} วัน`}</td>
-      <td${row.paymentDetail ? ` title="${escapeHtml(row.paymentDetail)}"` : ""}>${row.paymentChannel ? escapeHtml(row.paymentChannel) : '<span class="muted">-</span>'}</td>
-      <td class="right">${row.entryCount ? formatNumber(row.entryCount) : '<span class="muted">-</span>'}</td>
+      <td class="center">${row.creditDays === "" || row.creditDays == null ? '<span class="muted">-</span>' : `${escapeHtml(row.creditDays)} วัน`}</td>
+      <td class="center"${row.paymentDetail ? ` title="${escapeHtml(row.paymentDetail)}"` : ""}>${row.paymentChannel ? escapeHtml(row.paymentChannel) : '<span class="muted">-</span>'}</td>
+      <td class="center">${row.entryCount ? formatNumber(row.entryCount) : '<span class="muted">-</span>'}</td>
       <td class="nowrap">${row.lastDate ? escapeHtml(formatDate(row.lastDate)) : '<span class="muted">-</span>'}</td>
       <td class="right">${row.outstanding ? `<a href="../payables/payables.html"${row.overdueCount ? ' class="unbalanced" title="มีเอกสารเกินกำหนดชำระ"' : ""}>${formatMoney(row.outstanding)}</a>` : '<span class="muted">-</span>'}</td>
       <td class="actions-cell">${action}</td>

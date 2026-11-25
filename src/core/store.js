@@ -868,6 +868,8 @@ async function performSave(keys) {
     plans.forEach((plan) => plan.onSuccess());
     Object.assign(loadedRevisions, newRevisions);
     rememberConfirmed(targets, savedSnapshot);
+    // แจ้งหน้าอื่นที่เปิดอยู่ (แท็บ/หน้าต่างอื่น) ให้ใช้ข้อมูลใหม่ทันที เช่น เพิ่มลูกค้าแล้วตัวเลือกในสมุดรายวันอัปเดตเลย
+    broadcastSavedData(targets, savedSnapshot, newRevisions);
     // เขียนแคชในเครื่องเบื้องหลัง ไม่ต้องรอ (ข้อมูลบนเซิร์ฟเวอร์บันทึกเสร็จแล้ว)
     targets.forEach((key) => (key === META_KEY ? cacheMeta() : cacheCollection(key)));
 
@@ -883,6 +885,66 @@ async function performSave(keys) {
     return false;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* ซิงก์ระหว่างแท็บ/หน้าต่างในเครื่องเดียวกัน                                */
+/* ------------------------------------------------------------------ */
+
+/** ช่องสื่อสารระหว่างหน้าของแอปที่เปิดอยู่พร้อมกัน (ไม่มีในเบราว์เซอร์เก่า → ข้าม) */
+const syncChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("accounting-data-sync") : null;
+
+/**
+ * ส่งข้อมูลที่เพิ่งบันทึกสำเร็จไปให้หน้าอื่น
+ * @param {string[]} targets คีย์ที่บันทึก (รวม "meta")
+ * @param {AppState} snapshot ค่าที่บันทึก
+ * @param {Record<string, string>} revisions รหัสรุ่นใหม่
+ */
+function broadcastSavedData(targets, snapshot, revisions) {
+  if (!syncChannel) return;
+  const collections = {};
+  targets.forEach((key) => {
+    if (key === META_KEY) return;
+    const known = serverChunks[key];
+    collections[key] = {
+      items: snapshot[key],
+      chunks: chunkCounts[key] || 0,
+      chunkLengths: known ? known.chunks.map((chunk) => chunk.length) : null,
+    };
+  });
+  const meta = targets.includes(META_KEY) ? { settings: snapshot.settings, importFiles: snapshot.importFiles } : null;
+  try {
+    syncChannel.postMessage({ collections, meta, revisions });
+  } catch (error) {
+    console.warn("แจ้งหน้าอื่นไม่สำเร็จ", error);
+  }
+}
+
+/** รับข้อมูลที่หน้าอื่นเพิ่งบันทึก → ใส่ลง state แล้วให้หน้าวาดใหม่ (เฉพาะชุดที่หน้านี้โหลดไว้) */
+syncChannel?.addEventListener("message", ({ data }) => {
+  if (!data || !isSynced) return;
+  // หน้านี้กำลังบันทึกอยู่ → ไม่ทับ (ถ้าชนกัน ระบบตรวจรหัสรุ่นและโหลดข้อมูลล่าสุดให้เอง)
+  if (hasPendingSave()) return;
+  const keys = Object.keys(data.collections || {}).filter((key) => loadedCollections.has(key));
+  if (data.meta) keys.push(META_KEY);
+  if (!keys.length) return;
+
+  const nextData = { ...state };
+  keys.forEach((key) => {
+    if (key === META_KEY) {
+      nextData.settings = data.meta.settings;
+      nextData.importFiles = data.meta.importFiles;
+    } else {
+      const entry = data.collections[key];
+      nextData[key] = entry.items;
+      chunkCounts[key] = entry.chunks;
+      rememberServerChunksFromCache(key, entry);
+    }
+    if (data.revisions && data.revisions[key]) loadedRevisions[key] = data.revisions[key];
+  });
+  state = normalizeState(nextData);
+  rememberConfirmed(keys);
+  window.dispatchEvent(new CustomEvent(DATA_REFRESH_EVENT, { detail: { keys } }));
+});
 
 /** การบันทึกที่กำลังส่งไปเซิร์ฟเวอร์ */
 let activeSave = null;

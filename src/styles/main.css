@@ -634,6 +634,7 @@ thead th {
   white-space: nowrap;
 }
 thead th.right { text-align: right; }
+thead th.col-code { text-align: center; }
 tbody tr:hover td { background: var(--surface-2); }
 tbody tr:last-child td { border-bottom: 0; }
 tfoot th, tfoot td {
@@ -649,10 +650,15 @@ td.muted { padding: 28px 14px; text-align: center; }
 .cell-sub { display: block; color: var(--muted); font-size: 0.8rem; }
 .code { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .col-amount { width: 150px; }
-.col-code { width: 90px; }
+.col-code { width: 90px;}
 .col-name { min-width: 180px; }
 .col-date { width: 110px; }
-.col-actions { width: 1%; }
+.col-actions { width: 10%; }
+/* ตารางซัพพลายเออร์: ลดช่องว่างระหว่างคอลัมน์ค้างชำระกับปุ่ม */
+#vendors-table tr > :nth-last-child(2) { padding-right: 20px; }
+#vendors-table tr > :last-child { padding-left: 20px; }
+#vendors-table td.actions-cell { text-align: left; }
+#vendors-table thead th { text-align: center; }
 tr.group-head td {
   padding-top: 14px;
   background: var(--surface-2);
@@ -1352,3 +1358,18 @@ details.card[open] > .card-summary::after { transform: rotate(180deg); }
 .alert-remove:hover { color: var(--danger); background: transparent; }
 .alert-empty { padding: 22px 14px; color: var(--muted); text-align: center; font-size: 0.86rem; }
 @media print { .alert-bell, .alert-panel { display: none !important; } }
+
+/* ---------- เวอร์ชันโปรแกรมและปุ่มอัปเดต (ท้ายเมนูด้านข้าง) ---------- */
+.sidebar-version { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.app-version { color: var(--faint); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
+.update-check { position: relative; color: var(--muted); }
+.update-check[hidden] { display: none; }
+.update-check:disabled { cursor: progress; opacity: 0.6; }
+.update-check.is-spinning .icon { animation: update-spin 0.8s linear infinite; }
+.update-check.has-update { color: var(--accent); }
+.update-check.has-update::after {
+  content: ""; position: absolute; top: 4px; right: 4px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--danger); box-shadow: 0 0 0 2px var(--surface);
+}
+@keyframes update-spin { to { transform: rotate(360deg); } }

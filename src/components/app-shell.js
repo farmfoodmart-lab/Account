@@ -72,6 +72,7 @@
     moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
     logout: '<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>',
+    refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v4.5h-4.5"/>',
     menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
   };
@@ -136,6 +137,10 @@
           <span id="status" class="status-pill" data-state="busy">กำลังเชื่อมต่อ...</span>
           <button type="button" id="theme-toggle" class="icon-btn" aria-pressed="false"></button>
         </div>
+        <div class="sidebar-version">
+          <span id="app-version" class="app-version"></span>
+          <button type="button" id="update-check" class="icon-btn update-check" title="ตรวจสอบการอัปเดตโปรแกรม" aria-label="ตรวจสอบการอัปเดตโปรแกรม" hidden>${renderIcon("refresh")}</button>
+        </div>
       </div>
     </aside>
     <div class="sidebar-backdrop" id="sidebar-backdrop"></div>`;
@@ -144,6 +149,11 @@
   document.body.insertAdjacentHTML("afterbegin", shellHtml);
   if (!byId("toasts")) {
     document.body.insertAdjacentHTML("beforeend", '<div id="toasts" class="toasts" aria-live="polite"></div>');
+  }
+
+  // เวอร์ชันโปรแกรมและปุ่มอัปเดต (โหลดแยก ไม่ให้หน่วงการวาดเมนู)
+  if (location.protocol !== "file:") {
+    import("../../src/components/app-update.js").catch((error) => console.warn("โหลดตัวอัปเดตโปรแกรมไม่สำเร็จ", error));
   }
 
   // เปิดไฟล์ตรง ๆ (file://) เบราว์เซอร์จะบล็อก ES Modules ทำให้ระบบค้างที่ "กำลังเชื่อมต่อ..." — แจ้งให้ชัดเจนแทน

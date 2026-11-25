@@ -856,10 +856,13 @@ async function deleteEntry(entryId) {
   const confirmMessage = `ยืนยันการลบรายการ ${entry.docNo || ""} ${entry.desc || ""}? (หากต้องการเก็บประวัติ แนะนำให้ใช้ “กลับรายการ” แทน)`;
   if (!(await confirmDialog(confirmMessage.replace(/\s+/g, " ")))) return;
 
-  const isSaved = await commitChanges({ entries: state.entries.filter((item) => item.id !== entryId) });
-  if (isSaved && editingEntryId === entryId) resetForm();
+  // ลบออกจากหน้าจอทันที (state เปลี่ยนก่อนส่งเซิร์ฟเวอร์) ไม่ต้องรอเซิร์ฟเวอร์ตอบกลับ
+  const saving = commitChanges({ entries: state.entries.filter((item) => item.id !== entryId) });
+  if (editingEntryId === entryId) resetForm();
   renderEntryList();
+  const isSaved = await saving;
   if (isSaved) notifySuccess("ลบรายการบันทึกเรียบร้อย");
+  else renderEntryList(); // บันทึกไม่สำเร็จ → ระบบคืนค่าเดิมแล้ว วาดรายการกลับมา
 }
 
 /** คลิกปุ่มในตาราง: แก้ไข / คัดลอก / กลับรายการ / ลบ */

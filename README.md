@@ -12,6 +12,15 @@ VS Code Live Server หรือ `npx serve .` แล้วเปิด `Account
 1. Firebase Console → Authentication → Sign-in method → เปิด **Email/Password** และ **Google**
 2. แก้อีเมลใน [`firestore.rules`](firestore.rules) แล้ว Publish ที่ Firestore → Rules
 
+## การออกเวอร์ชันใหม่ (อัปเดตโปรแกรม)
+
+เครื่องที่ใช้งานกดปุ่ม ↻ ท้ายเมนูด้านข้าง (หรือระบบตรวจให้เองตอนเปิดโปรแกรม) แล้วเครื่องจะดาวน์โหลดไฟล์ทั้งหมดจาก GitHub มาเขียนทับในโฟลเดอร์โปรแกรม
+
+1. แก้ `"version"` และ `"notes"` ใน [`version.json`](version.json) (เช่น 1.0.0 → 1.0.1)
+2. commit แล้ว push ขึ้น branch `main` ของ repository ที่ตั้งไว้ใน `UPDATE_REPO` ([`src/components/app-update.js`](src/components/app-update.js)) — repository ต้องเป็น public
+
+ถ้าแก้ `create-shortcut.ps1` (ตัว server) ต้องปิดแล้วเปิดโปรแกรมใหม่หลังอัปเดต จึงจะมีผล
+
 ## โครงสร้างโฟลเดอร์
 
 ```
