@@ -689,7 +689,11 @@ tr.is-muted td { color: var(--faint); }
 .journal-form .form-grid { grid-template-columns: 150px 160px 140px 120px minmax(180px, 1fr) 150px; }
 /* ชื่อใหม่ที่ยังไม่ได้เลือกประเภท → ไฮไลต์ช่องประเภท */
 .journal-form select.needs-choice { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
-.journal-lines { margin-top: 18px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+/* ไม่ใช้ overflow: hidden — รายการค้นหาบัญชี (combobox) ต้องล้นออกนอกกรอบได้ จึงใส่มุมโค้งที่หัว/ท้ายแทน */
+.journal-lines { margin-top: 18px; border: 1px solid var(--border); border-radius: var(--radius); }
+.journal-lines > :first-child { border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
+.journal-lines > :last-child { border-radius: 0 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px); }
+.journal-line .combobox-list { z-index: 30; }
 .journal-lines-head, .journal-line {
   display: grid;
   grid-template-columns: 34px minmax(220px, 1fr) minmax(130px, 170px) minmax(130px, 170px) 40px;
@@ -704,7 +708,7 @@ tr.is-muted td { color: var(--faint); }
 .journal-line-number { color: var(--faint); font-size: 0.8rem; text-align: center; font-variant-numeric: tabular-nums; }
 .journal-line .journal-line-remove { width: 34px; min-height: 34px; padding: 0; border-color: transparent; background: transparent; color: var(--faint); font-size: 1.1rem; }
 .journal-line .journal-line-remove:hover { color: var(--danger); background: var(--danger-soft); }
-.journal-line.is-credit .journal-line-account { padding-left: 22px; }
+.journal-line.is-credit .journal-line-account-input { padding-left: 22px; }
 .journal-lines-foot {
   display: grid;
   grid-template-columns: 34px minmax(220px, 1fr) minmax(130px, 170px) minmax(130px, 170px) 40px;
@@ -1136,7 +1140,7 @@ main > * { animation: content-enter 0.28s ease-out both; }
   .journal-lines-head { display: none; }
   .journal-line { grid-template-columns: 1fr 1fr 34px; padding: 10px; }
   .journal-line .journal-line-number { display: none; }
-  .journal-line .journal-line-account { grid-column: 1 / -1; }
+  .journal-line .journal-line-account-box { grid-column: 1 / -1; }
   .journal-lines-foot { grid-template-columns: 1fr 1fr; }
   .journal-lines-foot .journal-lines-tools { grid-column: 1 / -1; }
   .journal-lines-foot > span:empty { display: none; }
@@ -1389,3 +1393,10 @@ details.card[open] > .card-summary::after { transform: rotate(180deg); }
 .update-toast-notes[hidden] { display: none; }
 .update-toast-notes li + li { margin-top: 2px; }
 .update-toast-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+/* ช่องบัญชีที่พิมพ์ไม่ตรงบัญชีใด */
+.journal-line-account-input.is-invalid { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+
+/* รายการตัวเลือกแบบ popover: อยู่ในเลเยอร์บนสุดของเบราว์เซอร์ (ไม่ถูกการ์ด/กรอบใดบัง)
+   ตำแหน่ง top/bottom/left/width กำหนดจาก combobox.js ให้ติดช่องพิมพ์ */
+.combobox-list[popover] { position: fixed; inset: auto; margin: 0; color: var(--text); }

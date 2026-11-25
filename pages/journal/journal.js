@@ -16,9 +16,9 @@
  *   ชื่อรายการไม่ใช่คู่ค้า จึงเก็บในช่อง itemName (ไม่เข้าทะเบียนลูกหนี้/เจ้าหนี้)
  */
 import { commitChanges, loadData, onDataRefresh, state } from "../../src/core/store.js";
-import { AMOUNT_EPSILON, ENTRY_KIND_LABELS } from "../../src/accounting/constants.js";
+import { ACCOUNT_TYPE_LABELS, AMOUNT_EPSILON, ENTRY_KIND_LABELS } from "../../src/accounting/constants.js";
 import { calculateEntryTotal, getEntryKind } from "../../src/accounting/rules.js";
-import { findAccountById, renderAccountOptions } from "../../src/accounting/accounts.js";
+import { findAccountById, getSortedAccounts, renderAccountOptions } from "../../src/accounting/accounts.js";
 import {
   createCustomerCodes,
   createSupplierCode,
@@ -79,8 +79,6 @@ let isDocumentNumberManual = false;
 let hasUnsavedChanges = false;
 /** จำนวนรายการที่แสดงอยู่ในตาราง */
 let visibleEntryLimit = ENTRIES_PER_PAGE;
-/** คีย์ localStorage จำสถานะสวิตช์ "เติมยอดแถวคู่อัตโนมัติ" */
-const AUTO_MIRROR_STORAGE_KEY = "journal_auto_mirror";
 
 /** HTML ตัวเลือกบัญชี สร้างครั้งเดียวแล้วใช้ซ้ำทุกบรรทัด (เร็วกว่าสร้างใหม่ทุกครั้ง) */
 let accountOptionsHtml = "";
@@ -192,6 +190,90 @@ function renumberLines() {
   });
 }
 
+/* ---------- ช่องบัญชีในแต่ละบรรทัด: พิมพ์ค้นหาได้ (รหัสหรือชื่อบัญชี) ---------- */
+/* ค่าจริงเก็บใน <select class="journal-line-account" hidden> (โค้ดส่วนอื่นอ่าน .value จากตัวนี้)
+   ช่องที่ผู้ใช้เห็นคือ <input class="journal-line-account-input"> แบบ combobox */
+
+const accountOptionLabel = (account) => `${account.code || ""} · ${account.name || ""}`;
+
+/** ตัวเลือกบัญชี จัดกลุ่มตามหมวด (เรียงตามผังบัญชี) */
+function getAccountOptions() {
+  return getSortedAccounts().map((account) => ({
+    value: account.id,
+    label: accountOptionLabel(account),
+    group: ACCOUNT_TYPE_LABELS[account.type] || "อื่น ๆ",
+    keywords: `${account.code || ""} ${account.name || ""}`,
+  }));
+}
+
+const getAccountInput = (row) => row.querySelector(".journal-line-account-input");
+
+/** ตั้งบัญชีของบรรทัด (ทั้งค่าจริงและข้อความที่แสดง) */
+function setLineAccount(row, accountId) {
+  const account = accountId ? findAccountById(accountId) : null;
+  row.querySelector(".journal-line-account").value = account ? accountId : "";
+  getAccountInput(row).value = account ? accountOptionLabel(account) : "";
+  getAccountInput(row).classList.remove("is-invalid");
+}
+
+/**
+ * ข้อความที่พิมพ์เอง (ไม่ได้เลือกจากรายการ) → หาบัญชีที่ตรงกับรหัส ชื่อ หรือข้อความเต็ม
+ * ไม่ตรงบัญชีใด → ล้างค่าบัญชี และทำเครื่องหมายช่องว่ายังไม่ถูกต้อง
+ */
+function resolveTypedAccount(row) {
+  const input = getAccountInput(row);
+  const text = input.value.trim().toLowerCase();
+  const select = row.querySelector(".journal-line-account");
+  if (!text) {
+    select.value = "";
+    input.classList.remove("is-invalid");
+    return;
+  }
+  const account = getSortedAccounts().find((item) => [accountOptionLabel(item), item.code, item.name, `${item.code} ${item.name}`]
+    .some((candidate) => String(candidate || "").trim().toLowerCase() === text));
+  if (account) {
+    setLineAccount(row, account.id);
+  } else {
+    select.value = "";
+    input.classList.add("is-invalid");
+  }
+}
+
+/**
+ * กด Enter ในช่องจำนวนเงิน: ไปคู่บรรทัดถัดไป หรือบันทึกถ้าเป็นคู่สุดท้าย
+ * บรรทัดจับคู่กันเป็น (1,2), (3,4), ... ตามสวิตช์ "เติมยอดแถวคู่อัตโนมัติ"
+ * - มี 2 บรรทัด → Enter = บันทึกรายการ
+ * - มี 4 บรรทัด → Enter ที่คู่แรก = ไปช่องจำนวนเงินบรรทัดที่ 3, Enter ที่คู่สุดท้าย = บันทึก
+ * @param {KeyboardEvent} event
+ * @param {HTMLElement} row
+ */
+function handleAmountEnter(event, row) {
+  if (event.key !== "Enter" || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  // ข้อมูลครบทั้งฟอร์มแล้ว → บันทึกเลย (ไม่ว่าจะกด Enter ที่บรรทัดไหน)
+  if (!findNextRequiredField()) {
+    entryForm.requestSubmit();
+    return;
+  }
+  const rows = getLineRows();
+  const rowIndex = rows.indexOf(row);
+  const pairEndIndex = rowIndex - (rowIndex % 2) + 1;
+  const nextPairRow = rows[pairEndIndex + 1];
+  // ยังมีช่องที่ต้องกรอก (ถึงคู่บรรทัดนี้ หรือทุกบรรทัดถ้าเป็นคู่สุดท้าย) → ไปช่องนั้นก่อน ไม่บันทึก
+  const missingField = findNextRequiredField({ lastRowIndex: nextPairRow ? pairEndIndex : Infinity });
+  if (missingField) {
+    if (missingField !== event.target) missingField.focus(); // ช่องนี้เองยังว่าง → อยู่ที่เดิม
+    return;
+  }
+  if (nextPairRow) {
+    const nextDebit = nextPairRow.querySelector(".journal-line-debit");
+    const nextCredit = nextPairRow.querySelector(".journal-line-credit");
+    (nextDebit.disabled ? nextCredit : nextDebit).focus();
+    return;
+  }
+  entryForm.requestSubmit();
+}
+
 /**
  * เพิ่มบรรทัดบัญชีหนึ่งบรรทัดในฟอร์ม
  * @param {{ accountId?: string, debit?: number, credit?: number }} [lineData]
@@ -202,15 +284,39 @@ function addLine(lineData = {}, { focus = false } = {}) {
   const row = document.createElement("div");
   row.className = "journal-line";
   row.innerHTML = `<span class="journal-line-number"></span>
-    <select class="journal-line-account" aria-label="บัญชี">${accountOptionsHtml}</select>
+    <input type="text" class="journal-line-account-input" placeholder="-- เลือกหรือพิมพ์บัญชี --" aria-label="บัญชี">
+    <select class="journal-line-account" hidden tabindex="-1" aria-hidden="true">${accountOptionsHtml}</select>
     <input type="number" class="journal-line-debit" placeholder="0.00" min="0" step="0.01" inputmode="decimal" aria-label="เดบิต" value="${lineData.debit || ""}">
     <input type="number" class="journal-line-credit" placeholder="0.00" min="0" step="0.01" inputmode="decimal" aria-label="เครดิต" value="${lineData.credit || ""}">
     <button type="button" class="journal-line-remove" title="ลบบรรทัด" aria-label="ลบบรรทัด">&times;</button>`;
-  row.querySelector(".journal-line-account").value = lineData.accountId || "";
 
   // หนึ่งบรรทัดมีได้ด้านเดียว: กรอกช่องหนึ่งแล้วปิดใช้งานอีกช่องทันที
   const debitInput = row.querySelector(".journal-line-debit");
   const creditInput = row.querySelector(".journal-line-credit");
+
+  // ช่องบัญชี: พิมพ์รหัสหรือชื่อบัญชีเพื่อค้นหา แล้วเลือก (Enter = เลือกตัวแรกที่ตรง)
+  const accountInput = getAccountInput(row);
+  createCombobox({
+    input: accountInput,
+    getOptions: getAccountOptions,
+    emptyText: "ไม่พบบัญชีที่ค้นหา — ลองพิมพ์รหัสหรือชื่อบัญชี",
+    selectFirstOnEnter: true,
+    onSelect: (option, { viaKeyboard }) => {
+      setLineAccount(row, option.value);
+      hasUnsavedChanges = true;
+      // บรรทัดนี้ยังไม่มีจำนวนเงิน → ไปช่องจำนวนเงินต่อ
+      if (!readAmount(debitInput) && !readAmount(creditInput)) {
+        (debitInput.disabled ? creditInput : debitInput).focus();
+        return;
+      }
+      // มีจำนวนเงินแล้ว → ไปช่องที่ยังต้องกรอก / ครบแล้วและเลือกด้วย Enter → บันทึกเลย
+      focusNextRequiredField({ submitIfComplete: viaKeyboard });
+    },
+  });
+  accountInput.closest(".combobox").classList.add("journal-line-account-box");
+  accountInput.addEventListener("change", () => resolveTypedAccount(row));
+  accountInput.addEventListener("input", () => accountInput.classList.remove("is-invalid"));
+  setLineAccount(row, lineData.accountId || "");
   const handleAmountInput = () => {
     syncLineInputs(row);
     mirrorToPairedLine(row);
@@ -218,6 +324,8 @@ function addLine(lineData = {}, { focus = false } = {}) {
   };
   debitInput.addEventListener("input", handleAmountInput);
   creditInput.addEventListener("input", handleAmountInput);
+  debitInput.addEventListener("keydown", (event) => handleAmountEnter(event, row));
+  creditInput.addEventListener("keydown", (event) => handleAmountEnter(event, row));
   syncLineInputs(row);
   row.querySelector(".journal-line-remove").addEventListener("click", () => {
     if (getLineRows().length <= 2) {
@@ -232,7 +340,7 @@ function addLine(lineData = {}, { focus = false } = {}) {
 
   linesContainer.appendChild(row);
   renumberLines();
-  if (focus) row.querySelector(".journal-line-account").focus();
+  if (focus) getAccountInput(row).focus();
   return row;
 }
 
@@ -259,7 +367,7 @@ function fillBalancingAmount() {
   hasUnsavedChanges = true;
 
   const accountSelect = targetRow.querySelector(".journal-line-account");
-  if (!accountSelect.value) accountSelect.focus();
+  if (!accountSelect.value) getAccountInput(targetRow).focus();
 }
 
 /* ================================================================== */
@@ -363,14 +471,51 @@ function autoDetectPartyType(isFinal) {
 const partyCombobox = createCombobox({
   input: partyInput,
   getOptions: getFilteredPartyOptions,
-  onSelect: (option) => {
+  onSelect: (option, { viaKeyboard }) => {
     // เลือกจากรายการ → รู้ประเภทจากกลุ่มของตัวเลือก
     const type = Object.keys(PARTY_GROUPS).find((key) => PARTY_GROUPS[key] === option.group) || "";
     if (type && type !== partyTypeSelect.value) setPartyType(type, true);
     else updatePartyTypeWarning();
     applyAutoDescription(option.value);
+    focusNextRequiredField({ submitIfComplete: viaKeyboard });
   },
 });
+
+/**
+ * ช่องแรกที่ยังต้องกรอก: ประเภท (ชื่อใหม่ที่ยังไม่ได้เลือก) → คำอธิบาย → แต่ละบรรทัด: บัญชี → จำนวนเงิน
+ * @param {{ lastRowIndex?: number }} [options]
+ *   lastRowIndex = ตรวจบรรทัดถึงลำดับนี้ (ไม่ระบุ = ทุกบรรทัด)
+ * @returns {HTMLElement | null} null = กรอกครบแล้ว
+ */
+function findNextRequiredField({ lastRowIndex = Infinity } = {}) {
+  if (partyTypeSelect.classList.contains("needs-choice")) return partyTypeSelect;
+  if (!descriptionInput.value.trim()) return descriptionInput;
+  for (const [index, row] of getLineRows().entries()) {
+    if (index > lastRowIndex) break;
+    if (!row.querySelector(".journal-line-account").value) return getAccountInput(row);
+    const debitInput = row.querySelector(".journal-line-debit");
+    const creditInput = row.querySelector(".journal-line-credit");
+    if (!readAmount(debitInput) && !readAmount(creditInput)) return debitInput.disabled ? creditInput : debitInput;
+  }
+  return null;
+}
+
+/**
+ * ป้อนข้อมูลช่องหนึ่งเสร็จ → ไปช่องถัดไปที่ยังต้องกรอก ตามลำดับ:
+ * ประเภท (ชื่อใหม่ที่ยังไม่ได้เลือกประเภท) → คำอธิบาย → แต่ละบรรทัด: บัญชี → จำนวนเงิน
+ * (ถ้าคำอธิบายอัตโนมัติเติมคำอธิบายและบัญชีให้แล้ว จะไปช่องจำนวนเงินบรรทัดแรกทันที)
+ * ข้อมูลครบแล้ว: กด Enter (submitIfComplete) → บันทึกเลย / เลือกด้วยเมาส์ → ไปที่ปุ่มบันทึก (ไม่บันทึกเอง)
+ * @param {{ submitIfComplete?: boolean }} [options]
+ */
+function focusNextRequiredField({ submitIfComplete = false } = {}) {
+  const nextField = findNextRequiredField();
+  if (nextField) {
+    nextField.focus();
+    return;
+  }
+  if (submitIfComplete) entryForm.requestSubmit();
+  else submitButton.focus();
+}
 
 partyTypeSelect.addEventListener("change", () => {
   isPartyTypeAuto = false; // ผู้ใช้เลือกเอง
@@ -380,6 +525,12 @@ partyTypeSelect.addEventListener("change", () => {
   const currentType = detectPartyType(partyInput.value);
   if (partyTypeSelect.value && currentType && currentType !== partyTypeSelect.value) partyInput.value = "";
   lastAutoFilledParty = "";
+  // พิมพ์ชื่อไว้แล้ว (เช่น ชื่อใหม่ที่รอเลือกประเภท) → ไปช่องที่ต้องกรอกต่อ, ยังไม่มีชื่อ → กลับไปเลือกชื่อ
+  if (partyInput.value.trim() && partyTypeSelect.value) {
+    applyAutoDescription(resolvePartyInput());
+    focusNextRequiredField();
+    return;
+  }
   partyInput.focus();
   partyCombobox.open(partyInput.value);
 });
@@ -446,9 +597,8 @@ function resetForm({ keepDate = false } = {}) {
   if (!keepDate || !dateInput.value) dateInput.value = getTodayIso();
   descriptionInput.value = "";
   partyInput.value = "";
-  // บันทึกหลายรายการติดกัน (keepDate) → คงประเภทที่ผู้ใช้เลือกเองไว้ (ประเภทที่ตั้งอัตโนมัติจากชื่อเดิมล้างออก)
-  if (!keepDate || isPartyTypeAuto) setPartyType("", false);
-  else updatePartyTypeWarning();
+  // ประเภทกลับเป็น "ทั้งหมด" ทุกครั้ง (รวมถึงหลังกดบันทึก) — ช่องคู่ค้าแสดงตัวเลือกครบทุกกลุ่ม
+  setPartyType("", false);
   dueDateInput.value = "";
   lastAutoFilledParty = "";
   kindSelect.value = "general";
@@ -501,22 +651,29 @@ let lastAutoFilledParty = "";
  * เลือก/พิมพ์คู่ค้าหรือชื่อรายการที่มีแม่แบบคำอธิบายอัตโนมัติ → เติมคำอธิบาย บัญชีเดบิต (บรรทัด 1) และบัญชีเครดิต (บรรทัด 2)
  * @param {string} partyOptionValue ค่าคู่ค้า เช่น "id:abc", "name:ร้านสมใจ" หรือ "item:ค่าไฟฟ้า"
  */
+/**
+ * แม่แบบคำอธิบายอัตโนมัติของคู่ค้า หรือชื่อรายการ
+ * @returns {object | undefined}
+ */
+function findAutoDescriptionRule(customerId, customerName, itemName) {
+  if (itemName) return state.autoDesc.find((item) => String(item.itemName || "").trim() === itemName);
+  return state.autoDesc.find((item) => !item.itemName
+    && ((customerId && item.customerId === customerId) || (customerName && item.customerName === customerName)));
+}
+
 function applyAutoDescription(partyOptionValue) {
   const itemName = parseItemOptionValue(partyOptionValue);
   const { customerId, customerName } = itemName ? { customerId: "", customerName: "" } : parseCustomerOptionValue(partyOptionValue);
   if (!customerId && !customerName && !itemName) return;
-  const rule = itemName
-    ? state.autoDesc.find((item) => String(item.itemName || "").trim() === itemName)
-    : state.autoDesc.find((item) => !item.itemName
-      && ((customerId && item.customerId === customerId) || (customerName && item.customerName === customerName)));
+  const rule = findAutoDescriptionRule(customerId, customerName, itemName);
   const partyKey = `${customerId}|${customerName}|${itemName}`;
   if (!rule || partyKey === lastAutoFilledParty) return;
   lastAutoFilledParty = partyKey;
 
   descriptionInput.value = rule.text || "";
   const [debitRow, creditRow] = getLineRows();
-  if (debitRow && rule.debitAccountId) debitRow.querySelector(".journal-line-account").value = rule.debitAccountId;
-  if (creditRow && rule.creditAccountId) creditRow.querySelector(".journal-line-account").value = rule.creditAccountId;
+  if (debitRow && rule.debitAccountId) setLineAccount(debitRow, rule.debitAccountId);
+  if (creditRow && rule.creditAccountId) setLineAccount(creditRow, rule.creditAccountId);
   notify("เติมคำอธิบายและบัญชีจากคำอธิบายอัตโนมัติแล้ว");
 }
 
@@ -534,12 +691,28 @@ function readEntryForm() {
   if (!descriptionInput.value.trim()) return { error: "กรุณาระบุคำอธิบายรายการ", focusElement: descriptionInput };
 
   const lines = [];
-  for (const row of getLineRows()) {
+  for (const [index, row] of getLineRows().entries()) {
+    const lineNumber = index + 1;
+    resolveTypedAccount(row); // ข้อความที่พิมพ์ค้างไว้ (ยังไม่ออกจากช่อง) → แปลงเป็นบัญชีก่อนตรวจ
     const accountSelect = row.querySelector(".journal-line-account");
-    const debit = readAmount(row.querySelector(".journal-line-debit"));
+    const accountInput = getAccountInput(row);
+    const debitInput = row.querySelector(".journal-line-debit");
+    const debit = readAmount(debitInput);
     const credit = readAmount(row.querySelector(".journal-line-credit"));
-    if (!debit && !credit) continue; // บรรทัดว่างไม่บันทึก
-    if (!accountSelect.value) return { error: "มีบรรทัดที่กรอกจำนวนเงินแต่ยังไม่ได้เลือกบัญชี", focusElement: accountSelect };
+    // ทุกบรรทัดต้องกรอกครบ: บรรทัดที่ไม่ใช้ให้กด × ลบออกก่อนบันทึก
+    if (!debit && !credit) {
+      return {
+        error: `บรรทัดที่ ${lineNumber} ยังไม่ได้ใส่จำนวนเงินเดบิตหรือเครดิต — กรอกให้ครบ หรือกด × เพื่อลบบรรทัดนั้น`,
+        focusElement: accountSelect.value ? debitInput : accountInput,
+      };
+    }
+    if (!accountSelect.value) {
+      const typed = accountInput.value.trim();
+      return {
+        error: typed ? `บรรทัดที่ ${lineNumber}: ไม่พบบัญชี “${typed}” — เลือกจากรายการ` : `บรรทัดที่ ${lineNumber} ยังไม่ได้เลือกบัญชี`,
+        focusElement: accountInput,
+      };
+    }
     if (debit < 0 || credit < 0) return { error: "จำนวนเงินต้องไม่ติดลบ" };
     if (debit > 0 && credit > 0) return { error: "แต่ละบรรทัดใส่ได้เฉพาะเดบิตหรือเครดิตอย่างใดอย่างหนึ่ง" };
     lines.push({ accountId: accountSelect.value, debit, credit });
@@ -595,22 +768,19 @@ function readEntryForm() {
 }
 
 /**
- * ชื่อใหม่ (ลูกค้า / ซัพพลายเออร์ / ชื่อรายการ) → สร้างแม่แบบคำอธิบายอัตโนมัติจากรายการนี้
+ * ลูกค้า / ซัพพลายเออร์ / ชื่อรายการ ที่ยังไม่มีคำอธิบายอัตโนมัติ → สร้างแม่แบบจากรายการนี้
+ * (ตรวจทุกครั้งที่บันทึก ไม่ว่าชื่อจะใหม่หรือมีอยู่แล้ว)
  * ใช้คำอธิบาย บัญชีเดบิตบรรทัดแรก และบัญชีเครดิตบรรทัดแรก
  * @param {object} entryData ผลจาก readEntryForm
- * @returns {object | null} แม่แบบใหม่ หรือ null ถ้ามีแม่แบบของชื่อนี้อยู่แล้ว
+ * @returns {object | null} แม่แบบใหม่ หรือ null ถ้ามีแม่แบบของชื่อนี้อยู่แล้ว / ไม่ได้ระบุคู่ค้า
  */
-function buildTemplateForNewParty(entryData) {
+function buildMissingTemplate(entryData) {
   const { customerId, customerName, itemName, partyType, desc, lines } = entryData;
   const debitLine = lines.find((line) => line.debit > 0);
   const creditLine = lines.find((line) => line.credit > 0);
   if (!desc || !debitLine || !creditLine || (!customerName && !itemName)) return null;
-  const hasTemplate = state.autoDesc.some((rule) => {
-    if (itemName) return String(rule.itemName || "").trim() === itemName;
-    if (rule.itemName) return false;
-    return customerId ? rule.customerId === customerId : !rule.customerId && rule.customerName === customerName;
-  });
-  if (hasTemplate) return null;
+  // มีแม่แบบของคู่ค้า/ชื่อรายการนี้แล้ว (ตรวจแบบเดียวกับตอนเติมคำอธิบาย) → ไม่สร้างซ้ำ
+  if (findAutoDescriptionRule(customerId, customerName, itemName)) return null;
   let partyFields;
   if (itemName) partyFields = { itemName };
   else if (customerId) partyFields = { customerId, customerName }; // คู่ค้าในทะเบียน (เช่น ซัพพลายเออร์ที่เพิ่งเพิ่ม)
@@ -665,7 +835,8 @@ async function handleFormSubmit(event) {
     // อ้างซัพพลายเออร์ใหม่ด้วย id (ไม่ใช่ชื่อลอย ๆ) เหมือนเลือกจากทะเบียน
     result.entryData = { ...result.entryData, customerId: newSupplier.id, customerName: formatCustomerLabel(newSupplier), partyType: "" };
   }
-  const newTemplate = result.isNewParty ? buildTemplateForNewParty(result.entryData) : null;
+  // ลูกค้า / ซัพพลายเออร์ / ชื่อรายการ ที่ยังไม่มีคำอธิบายอัตโนมัติ → สร้างจากรายการนี้ให้เลย (ทั้งชื่อใหม่และชื่อเดิม)
+  const newTemplate = buildMissingTemplate(result.entryData);
   const newCustomerRecord = buildCustomerRecordForNewName(result.entryData);
   const { customerId, customerName, itemName, partyType, due, ...entryFields } = result.entryData;
   // ฟิลด์ที่ไม่บังคับ: ใส่เฉพาะเมื่อมีค่า
@@ -723,7 +894,8 @@ async function handleFormSubmit(event) {
   renderEntryList();
   renderMissingNumberBanner();
   notifySuccess(`${isEditing ? "แก้ไข" : "บันทึก"}รายการ ${entryFields.docNo} แล้ว`);
-  descriptionInput.focus();
+  // รายการถัดไป: เริ่มจากเลือกชื่อลูกค้า / ซัพพลายเออร์ / ชื่อรายการ
+  partyInput.focus();
 
   if (await savePromise) return;
   // ส่งขึ้นเซิร์ฟเวอร์ไม่สำเร็จ: รายการถูกคืนค่าแล้ว → นำข้อมูลกลับมาใส่ฟอร์มให้กดบันทึกใหม่ได้ทันที
@@ -1097,12 +1269,25 @@ partyInput.addEventListener("change", () => {
   autoDetectPartyType(true);
   applyAutoDescription(resolvePartyInput());
 });
+// ป้อนคำอธิบายเสร็จแล้วกด Enter → ไปช่องที่ต้องกรอกต่อ / ข้อมูลครบแล้ว → บันทึกเลย
+descriptionInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  if (!descriptionInput.value.trim()) return; // ช่องบังคับ ยังว่างอยู่ → อยู่ที่ช่องนี้
+  focusNextRequiredField({ submitIfComplete: true });
+});
+// พิมพ์ชื่อเองแล้วกด Enter (ไม่ได้เลือกจากรายการ) → ไปช่องที่ต้องกรอกต่อ แทนการบันทึกฟอร์ม
+// (เลือกจากรายการด้วย Enter → combobox จัดการแล้ว และ onSelect ย้ายโฟกัสให้)
+partyInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.defaultPrevented || event.ctrlKey || event.metaKey || event.isComposing) return;
+  event.preventDefault();
+  if (!partyInput.value.trim()) return;
+  autoDetectPartyType(true);
+  applyAutoDescription(resolvePartyInput());
+  partyCombobox.close();
+  focusNextRequiredField({ submitIfComplete: true });
+});
 autoMirrorSwitch.addEventListener("change", () => {
-  try {
-    localStorage.setItem(AUTO_MIRROR_STORAGE_KEY, autoMirrorSwitch.checked ? "1" : "0");
-  } catch {
-    // บันทึกไม่ได้ก็ไม่เป็นไร สวิตช์ยังใช้ได้ในหน้านี้
-  }
   if (autoMirrorSwitch.checked) mirrorAllPairs();
   updateBalanceStatus();
 });
@@ -1137,11 +1322,8 @@ window.addEventListener("beforeunload", (event) => {
 
 if (await loadData(["entries", "accounts", "customers", "suppliers", "customerNames", "autoDesc"])) {
   accountOptionsHtml = renderAccountOptions();
-  try {
-    autoMirrorSwitch.checked = localStorage.getItem(AUTO_MIRROR_STORAGE_KEY) === "1";
-  } catch {
-    autoMirrorSwitch.checked = false;
-  }
+  // "เติมยอดแถวคู่อัตโนมัติ" เปิดทุกครั้งที่เข้าหน้า (ปิดได้ชั่วคราวระหว่างใช้งาน แต่เข้าหน้าใหม่จะเปิดอีก)
+  autoMirrorSwitch.checked = true;
   resetForm();
   // ตัวเลือกเดือนของรายการที่บันทึกแล้ว (ตั้งช่วง ตั้งแต่–ถึง ให้ทั้งเดือน)
   monthFilter = createMonthFilter({

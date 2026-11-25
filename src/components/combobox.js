@@ -30,10 +30,19 @@ const MAX_VISIBLE_OPTIONS = 5000;
  * @param {object} config
  * @param {HTMLInputElement} config.input ช่องพิมพ์
  * @param {() => ComboboxOption[]} config.getOptions ฟังก์ชันคืนตัวเลือกล่าสุด (เรียกทุกครั้งที่เปิดรายการ)
- * @param {(option: ComboboxOption) => void} [config.onSelect] เรียกเมื่อผู้ใช้เลือกตัวเลือกจากรายการ
+ * @param {(option: ComboboxOption, info: { viaKeyboard: boolean }) => void} [config.onSelect] เรียกเมื่อผู้ใช้เลือกตัวเลือกจากรายการ
+ *   viaKeyboard = เลือกด้วย Enter (false = คลิกเมาส์)
  * @param {string} [config.emptyText] ข้อความเมื่อไม่พบตัวเลือก
+ * @param {boolean} [config.selectFirstOnEnter] กด Enter โดยยังไม่ได้เลื่อนเลือก → เลือกตัวเลือกแรกที่ตรง
+ *   (เช่น พิมพ์รหัสบัญชี "101" แล้วกด Enter)
  */
-export function createCombobox({ input, getOptions, onSelect = () => {}, emptyText = "ไม่พบในรายการ — ใช้ข้อความที่พิมพ์ได้เลย" }) {
+export function createCombobox({
+  input,
+  getOptions,
+  onSelect = () => {},
+  emptyText = "ไม่พบในรายการ — ใช้ข้อความที่พิมพ์ได้เลย",
+  selectFirstOnEnter = false,
+}) {
   const wrapper = document.createElement("div");
   wrapper.className = "combobox";
   input.parentNode.insertBefore(wrapper, input);
@@ -58,12 +67,42 @@ export function createCombobox({ input, getOptions, onSelect = () => {}, emptyTe
   list.className = "combobox-list";
   list.id = listId;
   list.setAttribute("role", "listbox");
-  list.hidden = true;
+  // แสดงรายการใน "เลเยอร์บนสุด" ของเบราว์เซอร์ (popover) → ไม่ถูกการ์ด/ตาราง/กรอบที่ตัดขอบ (overflow) บัง
+  // เบราว์เซอร์เก่าที่ไม่รองรับ popover → แสดงแบบ absolute ใต้ช่องเหมือนเดิม
+  const usesTopLayer = typeof list.showPopover === "function";
+  if (usesTopLayer) list.setAttribute("popover", "manual");
+  else list.hidden = true;
   wrapper.appendChild(list);
 
   /** ตัวเลือกที่แสดงอยู่ (หลังกรอง) */
   let visibleOptions = [];
   let highlightedIndex = -1;
+  let isOpen = false;
+
+  /** วางรายการให้ติดช่องพิมพ์ — ที่ด้านล่างจอไม่พอ เปิดขึ้นด้านบนแทน */
+  function positionList() {
+    if (!usesTopLayer || !isOpen) return;
+    const rect = wrapper.getBoundingClientRect();
+    const gap = 4;
+    const margin = 8;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
+    const spaceAbove = rect.top - gap - margin;
+    const openUpward = spaceBelow < 200 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(120, Math.min(320, openUpward ? spaceAbove : spaceBelow));
+    list.style.left = `${Math.round(rect.left)}px`;
+    list.style.width = `${Math.round(rect.width)}px`;
+    list.style.maxHeight = `${Math.round(maxHeight)}px`;
+    if (openUpward) {
+      list.style.top = "auto";
+      list.style.bottom = `${Math.round(window.innerHeight - rect.top + gap)}px`;
+    } else {
+      list.style.bottom = "auto";
+      list.style.top = `${Math.round(rect.bottom + gap)}px`;
+    }
+  }
+  // เลื่อนหน้า / ย่อขยายหน้าต่างระหว่างเปิดรายการ → ตามช่องพิมพ์ไปด้วย
+  window.addEventListener("scroll", positionList, { capture: true, passive: true });
+  window.addEventListener("resize", positionList);
 
   function renderList(filterText) {
     const searchText = String(filterText || "").trim().toLowerCase();
@@ -99,15 +138,31 @@ export function createCombobox({ input, getOptions, onSelect = () => {}, emptyTe
 
   function open(filterText = input.value) {
     renderList(filterText);
-    list.hidden = false;
+    if (!isOpen) {
+      isOpen = true;
+      if (usesTopLayer) list.showPopover();
+      else list.hidden = false;
+    }
+    positionList();
     input.setAttribute("aria-expanded", "true");
   }
 
   function close() {
-    list.hidden = true;
+    if (isOpen) {
+      isOpen = false;
+      if (usesTopLayer) list.hidePopover();
+      else list.hidden = true;
+    }
     input.setAttribute("aria-expanded", "false");
     highlightedIndex = -1;
+    isFilteredByTyping = false;
   }
+
+  /**
+   * รายการเปิดเพราะผู้ใช้พิมพ์ค้นหา (ไม่ใช่แค่เข้าช่อง) — ใช้ตัดสินว่า Tab = เลื่อนตัวเลือก
+   * เข้าช่องด้วย Tab แล้วกด Tab ต่อ ยังไปช่องถัดไปได้ตามปกติ (ไม่ติดอยู่ในรายการ)
+   */
+  let isFilteredByTyping = false;
 
   function highlight(index) {
     highlightedIndex = Math.max(0, Math.min(visibleOptions.length - 1, index));
@@ -119,27 +174,45 @@ export function createCombobox({ input, getOptions, onSelect = () => {}, emptyTe
     });
   }
 
-  function choose(option) {
+  function choose(option, { viaKeyboard = false } = {}) {
     if (!option) return;
     input.value = option.label;
     close();
-    onSelect(option);
+    onSelect(option, { viaKeyboard });
   }
 
-  input.addEventListener("input", () => open(input.value));
+  input.addEventListener("input", () => {
+    open(input.value);
+    isFilteredByTyping = Boolean(input.value.trim());
+  });
   input.addEventListener("focus", () => open(""));
   input.addEventListener("keydown", (event) => {
+    // พิมพ์ค้นหาแล้วมีตัวเลือก: Tab = ตัวถัดไป (ครั้งแรก = ตัวแรก), Shift+Tab = ตัวก่อนหน้า
+    // เลยตัวสุดท้าย (หรือ Shift+Tab ที่ตัวแรก) → ออกจากช่องไปช่องถัดไปตามปกติ
+    if (event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey
+      && isOpen && isFilteredByTyping && visibleOptions.length) {
+      const nextIndex = event.shiftKey ? highlightedIndex - 1 : highlightedIndex + 1;
+      if (nextIndex >= 0 && nextIndex < visibleOptions.length && !(event.shiftKey && highlightedIndex < 0)) {
+        event.preventDefault();
+        highlight(nextIndex);
+        return;
+      }
+    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      if (list.hidden) open("");
+      if (!isOpen) open("");
       highlight(highlightedIndex + 1);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       highlight(highlightedIndex - 1);
-    } else if (event.key === "Enter" && !list.hidden && highlightedIndex >= 0) {
+    } else if (event.key === "Enter" && isOpen && highlightedIndex >= 0) {
       event.preventDefault(); // เลือกตัวเลือก ไม่ใช่ส่งฟอร์ม
-      choose(visibleOptions[highlightedIndex]);
-    } else if (event.key === "Escape" && !list.hidden) {
+      choose(visibleOptions[highlightedIndex], { viaKeyboard: true });
+    } else if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && selectFirstOnEnter
+      && isOpen && input.value.trim() && visibleOptions.length) {
+      event.preventDefault();
+      choose(visibleOptions[0], { viaKeyboard: true });
+    } else if (event.key === "Escape" && isOpen) {
       event.stopPropagation();
       close();
     }
@@ -152,7 +225,7 @@ export function createCombobox({ input, getOptions, onSelect = () => {}, emptyTe
   });
   toggleButton.addEventListener("mousedown", (event) => {
     event.preventDefault();
-    if (list.hidden) {
+    if (!isOpen) {
       input.focus();
       open("");
     } else {
