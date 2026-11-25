@@ -292,12 +292,23 @@ function resolvePartyInput() {
   if (!text) return "";
   const partyType = partyTypeSelect.value;
   if (partyType === "item") return `item:${text}`;
+  // ชื่อตรงกับตัวเลือกในกลุ่มที่เลือก → ใช้ตัวนั้น (ลูกค้าและซัพพลายเออร์ชื่อเดียวกันได้ เช่น "ปัญญา")
+  const exactOption = getFilteredPartyOptions().find((option) => option.label === text);
+  if (exactOption) return exactOption.value;
   const value = resolvePartyText(text);
   return partyType && parseItemOptionValue(value) ? `name:${text}` : value;
 }
 
 /** ประเภทของค่าในช่องคู่ค้า (ใช้ตั้งช่องประเภทตอนเปิดรายการเดิม) */
 function detectPartyType(text) {
+  // ชื่อตรงกับตัวเลือก: มีกลุ่มเดียว → ใช้กลุ่มนั้น / หลายกลุ่ม (ลูกค้าและซัพพลายเออร์ชื่อเดียวกัน) → ไม่เดา
+  const label = String(text || "").trim();
+  const matchedTypes = [...new Set(getPartyOptions()
+    .filter((option) => option.label === label)
+    .map((option) => Object.keys(PARTY_GROUPS).find((type) => PARTY_GROUPS[type] === option.group))
+    .filter(Boolean))];
+  if (matchedTypes.length === 1) return matchedTypes[0];
+  if (matchedTypes.length > 1) return matchedTypes.includes(partyTypeSelect.value) ? partyTypeSelect.value : "";
   const value = resolvePartyText(text);
   if (!value) return "";
   const option = getPartyOptions().find((item) => item.value === value);

@@ -68,7 +68,8 @@ export function renderCustomerOptions() {
   const toOption = (party) => `<option value="id:${escapeHtml(party.id)}">${escapeHtml(formatCustomerLabel(party))}</option>`;
   const supplierOptions = sortByCode(state.suppliers || []).filter((supplier) => formatCustomerLabel(supplier)).map(toOption);
 
-  const registeredNames = new Set(getRegisteredParties().map((party) => (party.name || "").trim()));
+  // ชื่อซ้ำกับทะเบียนลูกค้าเดิมแสดงครั้งเดียว (ชื่อซ้ำกับซัพพลายเออร์ยังแสดงในกลุ่มลูกค้า)
+  const registeredNames = new Set(state.customers.map((customer) => (customer.name || "").trim()));
   const listedNames = new Set();
   const toNameOption = (record) => {
     const name = (record.name || "").trim();
@@ -362,37 +363,46 @@ export function isNonPartyName(name) {
 export function getPartyOptions() {
   const options = [];
   const usedValues = new Set();
-  const add = (value, label, group, keywords = "") => {
+  /**
+   * @param {boolean} [isListed] true = ผู้ใช้เพิ่มไว้ในรายชื่อลูกค้า/ซัพพลายเออร์เอง → แสดงเสมอ
+   *   false = ชื่อที่เดาจากรายการบัญชีเก่า ("เคยใช้") → กรองคำทั่วไปออก
+   */
+  const add = (value, label, group, keywords = "", isListed = false) => {
     if (usedValues.has(value)) return;
-    // ชื่อที่ไม่ใช่คู่ค้า (เช่น "เงินสด", "ลูกค้า") ไม่แสดงในกลุ่มลูกค้า/ซัพพลายเออร์
-    if (group !== PARTY_GROUPS.item && isNonPartyName(value.startsWith("id:") ? findCustomerById(value.slice(3))?.name : label)) return;
+    // ชื่อที่เดาจากรายการเก่าที่ไม่ใช่คู่ค้าจริง (เช่น "เงินสด", "ลูกค้า") ไม่แสดง
+    // แต่ชื่อที่อยู่ในรายชื่อ แม้จะตรงกับชื่อบัญชี (เช่น ลูกค้าชื่อ "เงินสด") ต้องแสดงเสมอ
+    if (!isListed && group !== PARTY_GROUPS.item && isNonPartyName(label)) return;
     usedValues.add(value);
     options.push({ value, label, group, keywords: `${label} ${keywords}`.toLowerCase() });
   };
   const registeredNames = new Set(getRegisteredParties().map((party) => (party.name || "").trim()));
+  // ชื่อในทะเบียนลูกค้าเดิม (มี id) — รายชื่อลูกค้าที่ชื่อซ้ำกันแสดงครั้งเดียว
+  // (ชื่อซ้ำกับซัพพลายเออร์ยังแสดงในกลุ่มลูกค้า เพราะเป็นคนละกลุ่ม)
+  const registeredCustomerNames = new Set(state.customers.map((customer) => (customer.name || "").trim()));
+  const listedCustomerNames = new Set(state.customerNames.map((record) => (record.name || "").trim()));
   const usedNames = getUsedPartyNames();
-  // ชื่อที่ตรงกับคู่ค้าในทะเบียนไม่ต้องแสดงซ้ำ (เลือกจากรายการในทะเบียนแทน)
+  // ชื่อที่ตรงกับคู่ค้าในทะเบียน/รายชื่อไม่ต้องแสดงซ้ำ (เลือกจากรายการในทะเบียนแทน)
   const addUsedNames = (names, group) => names
-    .filter((name) => !registeredNames.has(name))
+    .filter((name) => !registeredNames.has(name) && !listedCustomerNames.has(name))
     .forEach((name) => add(`name:${name}`, name, group, "เคยใช้"));
 
   // 1. ชื่อลูกค้า: ทะเบียนลูกค้า + รายชื่อลูกค้า เรียงรวมกันตามรหัส → ชื่อที่เคยใช้ (ไม่มีรหัส) ต่อท้าย
   sortByCode([...state.customers, ...state.customerNames]).forEach((record) => {
     if (record.id && state.customers.includes(record)) {
       const label = formatCustomerLabel(record);
-      if (label) add(`id:${record.id}`, label, PARTY_GROUPS.customer, record.tax || "");
+      if (label) add(`id:${record.id}`, label, PARTY_GROUPS.customer, record.tax || "", true);
       return;
     }
     const name = (record.name || "").trim();
-    if (!name || registeredNames.has(name)) return;
-    add(`name:${name}`, name, PARTY_GROUPS.customer, record.code || "");
+    if (!name || registeredCustomerNames.has(name)) return;
+    add(`name:${name}`, name, PARTY_GROUPS.customer, record.code || "", true);
   });
   addUsedNames(usedNames.customerNames, PARTY_GROUPS.customer);
 
   // 2. ชื่อซัพพลายเออร์: ทะเบียนเจ้าหนี้ เรียงตามรหัส → ชื่อที่เคยใช้กับเจ้าหนี้การค้า
   sortByCode(state.suppliers || []).forEach((supplier) => {
     const label = formatCustomerLabel(supplier);
-    if (label) add(`id:${supplier.id}`, label, PARTY_GROUPS.supplier, supplier.tax || "");
+    if (label) add(`id:${supplier.id}`, label, PARTY_GROUPS.supplier, supplier.tax || "", true);
   });
   addUsedNames(usedNames.supplierNames, PARTY_GROUPS.supplier);
 
