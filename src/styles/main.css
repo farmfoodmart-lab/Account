@@ -1373,3 +1373,19 @@ details.card[open] > .card-summary::after { transform: rotate(180deg); }
   background: var(--danger); box-shadow: 0 0 0 2px var(--surface);
 }
 @keyframes update-spin { to { transform: rotate(360deg); } }
+
+/* ---------- การ์ดแจ้งเตือนเวอร์ชันใหม่ (อยู่จนกว่าจะกดปุ่ม) ---------- */
+.toast.update-toast {
+  align-items: flex-start;
+  width: min(400px, calc(100vw - 32px));
+  padding: 14px 16px 14px 12px;
+  border-radius: 14px;
+  cursor: default;
+}
+.update-toast-body { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+.update-toast-body strong { font-size: 0.95rem; }
+.update-toast-current { color: var(--muted); font-size: 0.8rem; }
+.update-toast-notes { margin: 8px 0 0; padding-left: 18px; color: var(--text-2); font-size: 0.85rem; overflow-wrap: anywhere; }
+.update-toast-notes[hidden] { display: none; }
+.update-toast-notes li + li { margin-top: 2px; }
+.update-toast-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }

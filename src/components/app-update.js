@@ -9,7 +9,6 @@
  *
  * โหลดโดย app-shell.js (import แบบ dynamic) — ปุ่มอยู่ที่ท้ายเมนูด้านข้าง
  */
-import { confirmDialog } from "./dialogs.js";
 import { notify, notifyError, notifySuccess } from "./notifications.js";
 
 /** ชื่อบัญชี/ชื่อ repository บน GitHub (ต้องเป็น public) */
@@ -191,6 +190,95 @@ async function applyUpdate(release) {
   window.setTimeout(() => window.location.reload(), 1200);
 }
 
+function reportUpdateError(error, title = "อัปเดตไม่สำเร็จ") {
+  if (error && error.name === "AbortError") notify("ยกเลิกการอัปเดต");
+  else if (error instanceof TypeError) notifyError("เชื่อมต่อ GitHub ไม่ได้ กรุณาตรวจสอบอินเทอร์เน็ต", { title });
+  else notifyError(error && error.message ? error.message : "อัปเดตไม่สำเร็จ", { title });
+}
+
+/* ------------------------------------------------------------------ */
+/* การ์ดแจ้งเตือนเวอร์ชันใหม่ (อยู่จนกว่าจะกดปุ่ม)                            */
+/* ------------------------------------------------------------------ */
+
+/** รายละเอียดการอัปเดตจาก "notes" ใน version.json — เป็นข้อความเดียว หรือรายการ (array) ก็ได้ */
+function getReleaseNotes(release) {
+  const notes = Array.isArray(release.notes) ? release.notes : String(release.notes || "").split(/\n+/);
+  return notes.map((note) => String(note).trim()).filter(Boolean);
+}
+
+let updateCard = null;
+
+function closeUpdateCard() {
+  if (!updateCard) return;
+  const card = updateCard;
+  updateCard = null;
+  card.classList.add("out");
+  window.setTimeout(() => card.remove(), 220);
+}
+
+/** แสดงการ์ดเวอร์ชันใหม่ พร้อมรายละเอียดและปุ่ม "อัปเดตเลย" */
+function showUpdateCard(release) {
+  closeUpdateCard();
+  const card = document.createElement("div");
+  card.className = "toast update-toast";
+  card.setAttribute("role", "alertdialog");
+  card.setAttribute("aria-labelledby", "update-toast-title");
+  card.innerHTML = `
+    <span class="toast-icon" aria-hidden="true">↻</span>
+    <div class="update-toast-body">
+      <strong id="update-toast-title"></strong>
+      <span class="update-toast-current"></span>
+      <ul class="update-toast-notes"></ul>
+      <div class="update-toast-actions">
+        <button type="button" class="secondary small" data-action="later">ไว้ทีหลัง</button>
+        <button type="button" class="small" data-action="update">อัปเดตเลย</button>
+      </div>
+    </div>`;
+  // ใช้ textContent: ข้อความมาจาก GitHub ห้ามตีความเป็น HTML
+  card.querySelector("#update-toast-title").textContent = `มีเวอร์ชันใหม่ v${release.version}`;
+  card.querySelector(".update-toast-current").textContent = `เวอร์ชันปัจจุบัน v${currentVersion}`;
+  const notesList = card.querySelector(".update-toast-notes");
+  getReleaseNotes(release).forEach((note) => {
+    const item = document.createElement("li");
+    item.textContent = note;
+    notesList.appendChild(item);
+  });
+  notesList.hidden = !notesList.children.length;
+
+  const updateButton = card.querySelector('[data-action="update"]');
+  const laterButton = card.querySelector('[data-action="later"]');
+  laterButton.addEventListener("click", closeUpdateCard);
+  updateButton.addEventListener("click", async () => {
+    if (isBusy) return;
+    setBusy(true);
+    updateButton.disabled = true;
+    laterButton.disabled = true;
+    updateButton.textContent = "กำลังอัปเดต...";
+    try {
+      await applyUpdate(release);
+      closeUpdateCard();
+    } catch (error) {
+      updateButton.disabled = false;
+      laterButton.disabled = false;
+      updateButton.textContent = "อัปเดตเลย";
+      reportUpdateError(error);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  let container = document.getElementById("toasts");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toasts";
+    container.className = "toasts";
+    document.body.appendChild(container);
+  }
+  container.appendChild(card);
+  updateCard = card;
+  updateButton.focus({ preventScroll: true });
+}
+
 async function checkForUpdates() {
   if (isBusy) return;
   setBusy(true);
@@ -198,22 +286,19 @@ async function checkForUpdates() {
     const release = await fetchNewerRelease();
     markUpdateAvailable(release ? release.version : "");
     if (!release) {
+      closeUpdateCard();
       notifySuccess(`คุณใช้เวอร์ชันล่าสุดแล้ว (v${currentVersion})`);
       return;
     }
-    const message = `เวอร์ชันปัจจุบัน v${currentVersion}${release.notes ? `\n\nมีอะไรใหม่: ${release.notes}` : ""}`;
-    const confirmed = await confirmDialog(message, { title: `มีเวอร์ชันใหม่ v${release.version}`, confirmText: "อัปเดตเลย", tone: "primary" });
-    if (confirmed) await applyUpdate(release);
+    showUpdateCard(release);
   } catch (error) {
-    if (error && error.name === "AbortError") notify("ยกเลิกการอัปเดต");
-    else if (error instanceof TypeError) notifyError("เชื่อมต่อ GitHub ไม่ได้ กรุณาตรวจสอบอินเทอร์เน็ต", { title: "ตรวจสอบการอัปเดตไม่สำเร็จ" });
-    else notifyError(error && error.message ? error.message : "อัปเดตไม่สำเร็จ", { title: "อัปเดตไม่สำเร็จ" });
+    reportUpdateError(error, "ตรวจสอบการอัปเดตไม่สำเร็จ");
   } finally {
     setBusy(false);
   }
 }
 
-/** ตรวจเงียบ ๆ ครั้งเดียวต่อการเปิดโปรแกรม: มีเวอร์ชันใหม่ → แสดงจุดที่ปุ่ม และแจ้งเตือน */
+/** ตรวจเงียบ ๆ ครั้งเดียวต่อการเปิดโปรแกรม: มีเวอร์ชันใหม่ → แสดงจุดที่ปุ่ม และการ์ดแจ้งเตือนพร้อมปุ่มอัปเดต */
 async function autoCheck() {
   try {
     if (sessionStorage.getItem(AUTO_CHECK_KEY)) return;
@@ -225,7 +310,7 @@ async function autoCheck() {
     const release = await fetchNewerRelease();
     if (!release) return;
     markUpdateAvailable(release.version);
-    notify(`มีเวอร์ชันใหม่ v${release.version} — กดปุ่มอัปเดตที่ท้ายเมนูด้านข้าง`);
+    showUpdateCard(release);
   } catch {
     // ออฟไลน์/ยังไม่ได้ตั้งค่า repository → ไม่รบกวนผู้ใช้
   }
