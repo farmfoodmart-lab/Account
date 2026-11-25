@@ -31,7 +31,6 @@ import {
   toPartyText,
 } from "../../src/accounting/customers.js";
 import {
-  createDocumentNumber,
   createJournalNumber,
   getLockedPeriodMessage,
   isDateLocked,
@@ -190,9 +189,14 @@ function renumberLines() {
   });
 }
 
-/* ---------- ช่องบัญชีในแต่ละบรรทัด: พิมพ์ค้นหาได้ (รหัสหรือชื่อบัญชี) ---------- */
-/* ค่าจริงเก็บใน <select class="journal-line-account" hidden> (โค้ดส่วนอื่นอ่าน .value จากตัวนี้)
-   ช่องที่ผู้ใช้เห็นคือ <input class="journal-line-account-input"> แบบ combobox */
+/* ---------- ช่องบัญชีในแต่ละบรรทัด ---------- */
+/* ค่าจริงเก็บใน <select class="journal-line-account"> เสมอ (โค้ดส่วนอื่นอ่าน .value จากตัวนี้)
+   - ค่าเริ่มต้น: แสดง select ให้เลือกจากรายการอย่างเดียว
+   - เปิด "พิมพ์ค้นหาบัญชีในสมุดรายวัน" (หน้าตั้งค่า): ซ่อน select แล้วแสดง
+     <input class="journal-line-account-input"> แบบ combobox ให้พิมพ์รหัสหรือชื่อบัญชีค้นหาได้ */
+
+/** ช่องบัญชีพิมพ์ค้นหาได้หรือไม่ (ตั้งค่าที่หน้าตั้งค่า) */
+const isAccountSearchEnabled = () => Boolean(state.settings.journalAccountSearch);
 
 const accountOptionLabel = (account) => `${account.code || ""} · ${account.name || ""}`;
 
@@ -206,14 +210,19 @@ function getAccountOptions() {
   }));
 }
 
-const getAccountInput = (row) => row.querySelector(".journal-line-account-input");
+/** ช่องพิมพ์ค้นหาบัญชี (null = โหมดเลือกจากรายการอย่างเดียว) */
+const getAccountSearchInput = (row) => row.querySelector(".journal-line-account-input");
+/** ช่องบัญชีที่ผู้ใช้เห็น (ใช้ย้ายโฟกัส): ช่องพิมพ์ค้นหา หรือ select */
+const getAccountInput = (row) => getAccountSearchInput(row) || row.querySelector(".journal-line-account");
 
 /** ตั้งบัญชีของบรรทัด (ทั้งค่าจริงและข้อความที่แสดง) */
 function setLineAccount(row, accountId) {
   const account = accountId ? findAccountById(accountId) : null;
   row.querySelector(".journal-line-account").value = account ? accountId : "";
-  getAccountInput(row).value = account ? accountOptionLabel(account) : "";
-  getAccountInput(row).classList.remove("is-invalid");
+  const searchInput = getAccountSearchInput(row);
+  if (!searchInput) return;
+  searchInput.value = account ? accountOptionLabel(account) : "";
+  searchInput.classList.remove("is-invalid");
 }
 
 /**
@@ -221,7 +230,8 @@ function setLineAccount(row, accountId) {
  * ไม่ตรงบัญชีใด → ล้างค่าบัญชี และทำเครื่องหมายช่องว่ายังไม่ถูกต้อง
  */
 function resolveTypedAccount(row) {
-  const input = getAccountInput(row);
+  const input = getAccountSearchInput(row);
+  if (!input) return; // โหมดเลือกจากรายการ: ค่าอยู่ใน select แล้ว
   const text = input.value.trim().toLowerCase();
   const select = row.querySelector(".journal-line-account");
   if (!text) {
@@ -283,9 +293,10 @@ function handleAmountEnter(event, row) {
 function addLine(lineData = {}, { focus = false } = {}) {
   const row = document.createElement("div");
   row.className = "journal-line";
+  const isSearchable = isAccountSearchEnabled();
   row.innerHTML = `<span class="journal-line-number"></span>
-    <input type="text" class="journal-line-account-input" placeholder="-- เลือกหรือพิมพ์บัญชี --" aria-label="บัญชี">
-    <select class="journal-line-account" hidden tabindex="-1" aria-hidden="true">${accountOptionsHtml}</select>
+    ${isSearchable ? '<input type="text" class="journal-line-account-input" placeholder="-- เลือกหรือพิมพ์บัญชี --" aria-label="บัญชี">' : ""}
+    <select class="journal-line-account" ${isSearchable ? 'hidden tabindex="-1" aria-hidden="true"' : 'aria-label="บัญชี"'}>${accountOptionsHtml}</select>
     <input type="number" class="journal-line-debit" placeholder="0.00" min="0" step="0.01" inputmode="decimal" aria-label="เดบิต" value="${lineData.debit || ""}">
     <input type="number" class="journal-line-credit" placeholder="0.00" min="0" step="0.01" inputmode="decimal" aria-label="เครดิต" value="${lineData.credit || ""}">
     <button type="button" class="journal-line-remove" title="ลบบรรทัด" aria-label="ลบบรรทัด">&times;</button>`;
@@ -294,28 +305,41 @@ function addLine(lineData = {}, { focus = false } = {}) {
   const debitInput = row.querySelector(".journal-line-debit");
   const creditInput = row.querySelector(".journal-line-credit");
 
-  // ช่องบัญชี: พิมพ์รหัสหรือชื่อบัญชีเพื่อค้นหา แล้วเลือก (Enter = เลือกตัวแรกที่ตรง)
-  const accountInput = getAccountInput(row);
-  createCombobox({
-    input: accountInput,
-    getOptions: getAccountOptions,
-    emptyText: "ไม่พบบัญชีที่ค้นหา — ลองพิมพ์รหัสหรือชื่อบัญชี",
-    selectFirstOnEnter: true,
-    onSelect: (option, { viaKeyboard }) => {
-      setLineAccount(row, option.value);
-      hasUnsavedChanges = true;
-      // บรรทัดนี้ยังไม่มีจำนวนเงิน → ไปช่องจำนวนเงินต่อ
-      if (!readAmount(debitInput) && !readAmount(creditInput)) {
-        (debitInput.disabled ? creditInput : debitInput).focus();
-        return;
-      }
-      // มีจำนวนเงินแล้ว → ไปช่องที่ยังต้องกรอก / ครบแล้วและเลือกด้วย Enter → บันทึกเลย
-      focusNextRequiredField({ submitIfComplete: viaKeyboard });
-    },
-  });
-  accountInput.closest(".combobox").classList.add("journal-line-account-box");
-  accountInput.addEventListener("change", () => resolveTypedAccount(row));
-  accountInput.addEventListener("input", () => accountInput.classList.remove("is-invalid"));
+  /** เลือกบัญชีแล้ว → ไปช่องจำนวนเงินของบรรทัดนี้ / มีแล้ว → ช่องที่ยังต้องกรอก (ครบ + ใช้ Enter → บันทึก) */
+  const afterAccountChosen = (viaKeyboard) => {
+    hasUnsavedChanges = true;
+    if (!readAmount(debitInput) && !readAmount(creditInput)) {
+      (debitInput.disabled ? creditInput : debitInput).focus();
+      return;
+    }
+    focusNextRequiredField({ submitIfComplete: viaKeyboard });
+  };
+
+  if (isSearchable) {
+    // ช่องบัญชี: พิมพ์รหัสหรือชื่อบัญชีเพื่อค้นหา แล้วเลือก (Enter = เลือกตัวแรกที่ตรง)
+    const accountInput = getAccountSearchInput(row);
+    createCombobox({
+      input: accountInput,
+      getOptions: getAccountOptions,
+      emptyText: "ไม่พบบัญชีที่ค้นหา — ลองพิมพ์รหัสหรือชื่อบัญชี",
+      selectFirstOnEnter: true,
+      onSelect: (option, { viaKeyboard }) => {
+        setLineAccount(row, option.value);
+        afterAccountChosen(viaKeyboard);
+      },
+    });
+    accountInput.closest(".combobox").classList.add("journal-line-account-box");
+    accountInput.addEventListener("change", () => resolveTypedAccount(row));
+    accountInput.addEventListener("input", () => accountInput.classList.remove("is-invalid"));
+  } else {
+    // เลือกจากรายการอย่างเดียว: เลือกแล้วกด Enter → ไปช่องถัดไป (ไม่ย้ายตอนเปลี่ยนค่า เพราะลูกศรขึ้น/ลงก็เปลี่ยนค่า)
+    const accountSelect = row.querySelector(".journal-line-account");
+    accountSelect.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      event.preventDefault();
+      if (accountSelect.value) afterAccountChosen(true);
+    });
+  }
   setLineAccount(row, lineData.accountId || "");
   const handleAmountInput = () => {
     syncLineInputs(row);
@@ -671,9 +695,14 @@ function applyAutoDescription(partyOptionValue) {
   lastAutoFilledParty = partyKey;
 
   descriptionInput.value = rule.text || "";
-  const [debitRow, creditRow] = getLineRows();
+  // บรรทัด 1 = เดบิต, 2 = เครดิต, 3 = เดบิตที่ 2, 4 = เครดิตที่ 2 (คู่บรรทัดตรงกับ "เติมยอดแถวคู่อัตโนมัติ")
+  // มีบัญชีที่ 2 แค่ฝั่งเดียว → ใช้บรรทัดที่ 3 บรรทัดเดียว
+  const extraAccountIds = [rule.debitAccountId2, rule.creditAccountId2].filter((accountId) => findAccountById(accountId));
+  while (getLineRows().length < 2 + extraAccountIds.length) addLine();
+  const [debitRow, creditRow, ...extraRows] = getLineRows();
   if (debitRow && rule.debitAccountId) setLineAccount(debitRow, rule.debitAccountId);
   if (creditRow && rule.creditAccountId) setLineAccount(creditRow, rule.creditAccountId);
+  extraAccountIds.forEach((accountId, index) => setLineAccount(extraRows[index], accountId));
   notify("เติมคำอธิบายและบัญชีจากคำอธิบายอัตโนมัติแล้ว");
 }
 
@@ -707,7 +736,7 @@ function readEntryForm() {
       };
     }
     if (!accountSelect.value) {
-      const typed = accountInput.value.trim();
+      const typed = getAccountSearchInput(row) ? accountInput.value.trim() : "";
       return {
         error: typed ? `บรรทัดที่ ${lineNumber}: ไม่พบบัญชี “${typed}” — เลือกจากรายการ` : `บรรทัดที่ ${lineNumber} ยังไม่ได้เลือกบัญชี`,
         focusElement: accountInput,
@@ -776,11 +805,18 @@ function readEntryForm() {
  */
 function buildMissingTemplate(entryData) {
   const { customerId, customerName, itemName, partyType, desc, lines } = entryData;
-  const debitLine = lines.find((line) => line.debit > 0);
-  const creditLine = lines.find((line) => line.credit > 0);
+  const debitLines = lines.filter((line) => line.debit > 0);
+  const creditLines = lines.filter((line) => line.credit > 0);
+  const [debitLine, debitLine2] = debitLines;
+  const [creditLine, creditLine2] = creditLines;
   if (!desc || !debitLine || !creditLine || (!customerName && !itemName)) return null;
   // มีแม่แบบของคู่ค้า/ชื่อรายการนี้แล้ว (ตรวจแบบเดียวกับตอนเติมคำอธิบาย) → ไม่สร้างซ้ำ
   if (findAutoDescriptionRule(customerId, customerName, itemName)) return null;
+  // บัญชีที่ 2 (ไม่บังคับ): บรรทัดเดบิต/เครดิตบรรทัดที่สอง ถ้าเป็นคนละบัญชีกับบรรทัดแรก
+  const extraAccounts = {
+    ...(debitLine2 && debitLine2.accountId !== debitLine.accountId ? { debitAccountId2: debitLine2.accountId } : {}),
+    ...(creditLine2 && creditLine2.accountId !== creditLine.accountId ? { creditAccountId2: creditLine2.accountId } : {}),
+  };
   let partyFields;
   if (itemName) partyFields = { itemName };
   else if (customerId) partyFields = { customerId, customerName }; // คู่ค้าในทะเบียน (เช่น ซัพพลายเออร์ที่เพิ่งเพิ่ม)
@@ -789,6 +825,7 @@ function buildMissingTemplate(entryData) {
     id: createId(),
     debitAccountId: debitLine.accountId,
     creditAccountId: creditLine.accountId,
+    ...extraAccounts,
     text: desc,
     ...partyFields,
   };
@@ -892,7 +929,6 @@ async function handleFormSubmit(event) {
   monthFilter?.refresh(); // รายการเดือนใหม่จะขึ้นในตัวเลือกเดือนทันที
   resetForm({ keepDate: true });
   renderEntryList();
-  renderMissingNumberBanner();
   notifySuccess(`${isEditing ? "แก้ไข" : "บันทึก"}รายการ ${entryFields.docNo} แล้ว`);
   // รายการถัดไป: เริ่มจากเลือกชื่อลูกค้า / ซัพพลายเออร์ / ชื่อรายการ
   partyInput.focus();
@@ -900,7 +936,6 @@ async function handleFormSubmit(event) {
   if (await savePromise) return;
   // ส่งขึ้นเซิร์ฟเวอร์ไม่สำเร็จ: รายการถูกคืนค่าแล้ว → นำข้อมูลกลับมาใส่ฟอร์มให้กดบันทึกใหม่ได้ทันที
   renderEntryList();
-  renderMissingNumberBanner();
   restoreFailedEntry(savedEntry, editedEntryId);
 }
 
@@ -1185,44 +1220,6 @@ function exportCsv() {
 }
 
 /* ================================================================== */
-/* เลขที่เอกสารให้รายการเก่า                                               */
-/* ================================================================== */
-
-/** แถบแจ้งเตือน + ปุ่มสร้างเลขที่ให้รายการที่ยังไม่มีเลขที่เอกสาร */
-function renderMissingNumberBanner() {
-  byId("doc-number-banner")?.remove();
-  const missingCount = state.entries.filter((entry) => !entry.docNo).length;
-  if (!missingCount) return;
-
-  document.querySelector(".section-head").insertAdjacentHTML("beforebegin", `<div class="banner info" id="doc-number-banner">
-    <span>มี <strong>${formatNumber(missingCount)}</strong> รายการที่ยังไม่มีเลขที่เอกสาร</span>
-    <button type="button" class="small" id="doc-number-fill" style="margin-left:auto">สร้างเลขที่ให้อัตโนมัติ</button>
-  </div>`);
-  byId("doc-number-fill").addEventListener("click", () => assignMissingDocumentNumbers(missingCount));
-}
-
-async function assignMissingDocumentNumbers(missingCount) {
-  const confirmed = await confirmDialog(
-    `สร้างเลขที่เอกสาร JV-ปีเดือน-ลำดับ ให้ ${formatNumber(missingCount)} รายการตามลำดับวันที่?`,
-    { title: "สร้างเลขที่เอกสาร", confirmText: "สร้างเลขที่", tone: "primary" },
-  );
-  if (!confirmed) return;
-
-  const entries = state.entries.map((entry) => ({ ...entry }));
-  const reservedNumbers = new Set();
-  entries
-    .filter((entry) => !entry.docNo)
-    .sort((leftEntry, rightEntry) => (toIsoDate(leftEntry.date) || "").localeCompare(toIsoDate(rightEntry.date) || ""))
-    .forEach((entry) => { entry.docNo = createDocumentNumber(entries, "JV", entry.date, entry.id, reservedNumbers); });
-
-  if (!(await commitChanges({ entries }))) return;
-  renderEntryList();
-  renderMissingNumberBanner();
-  suggestDocumentNumber();
-  notifySuccess(`สร้างเลขที่เอกสาร ${formatNumber(missingCount)} รายการเรียบร้อย`);
-}
-
-/* ================================================================== */
 /* ผูกอีเวนต์                                                            */
 /* ================================================================== */
 
@@ -1345,15 +1342,23 @@ if (await loadData(["entries", "accounts", "customers", "suppliers", "customerNa
   }
   applyListFilters();
   renderEntryList();
-  renderMissingNumberBanner();
   focusFormIfRequested();
   if (!state.accounts.length) {
     entryForm.insertAdjacentHTML("afterbegin", '<div class="banner warn">ยังไม่มีผังบัญชี — <a href="../accounts/accounts.html">สร้างผังบัญชี</a> ก่อนบันทึกรายการ</div>');
   }
   onDataRefresh(() => {
     accountOptionsHtml = renderAccountOptions();
+    // เปิด/ปิด "พิมพ์ค้นหาบัญชี" จากหน้าตั้งค่า → สร้างบรรทัดใหม่ตามแบบที่ตั้ง (คงข้อมูลที่กรอกไว้)
+    const isSearchableNow = Boolean(getAccountSearchInput(getLineRows()[0] || document.createElement("div")));
+    if (isSearchableNow !== isAccountSearchEnabled()) {
+      const currentLines = getLineRows().map((row) => ({
+        accountId: row.querySelector(".journal-line-account").value,
+        debit: readAmount(row.querySelector(".journal-line-debit")),
+        credit: readAmount(row.querySelector(".journal-line-credit")),
+      }));
+      replaceLines(currentLines);
+    }
     monthFilter.refresh();
     renderEntryList();
-    renderMissingNumberBanner();
   });
 }

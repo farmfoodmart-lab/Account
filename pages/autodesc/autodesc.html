@@ -18,7 +18,7 @@
   <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
-      <div><h2>คำอธิบายอัตโนมัติ</h2><p class="page-sub">แม่แบบรายการตามชื่อลูกค้า หรือตามชื่อรายการ เมื่อเลือกชื่อนั้นในช่องคู่ค้าของสมุดรายวัน ระบบจะเติมคำอธิบาย บัญชีเดบิต และบัญชีเครดิตให้ทันที</p></div>
+      <div><h2>คำอธิบายอัตโนมัติ</h2><p class="page-sub">แม่แบบรายการตามชื่อลูกค้า หรือตามชื่อรายการ เมื่อเลือกชื่อนั้นในช่องคู่ค้าของสมุดรายวัน ระบบจะเติมคำอธิบาย บัญชีเดบิต และบัญชีเครดิตให้ทันที (บัญชีที่ 2 เติมลงบรรทัดที่ 3 และ 4)</p></div>
     </div>
     <form id="auto-description-form" class="card" autocomplete="off">
       <div class="form-title"><h3>เพิ่ม / แก้ไขแม่แบบ</h3></div>
@@ -28,6 +28,8 @@
         <label class="field" id="auto-description-item-field" hidden><span class="req">ชื่อรายการ</span><input type="text" id="auto-description-item" placeholder="เช่น ค่าไฟฟ้า, ค่าเช่าสำนักงาน" list="auto-description-item-list"><datalist id="auto-description-item-list"></datalist></label>
         <label class="field"><span class="req">บัญชีเดบิต (Dr.)</span><select id="auto-description-debit-account" required></select></label>
         <label class="field"><span class="req">บัญชีเครดิต (Cr.)</span><select id="auto-description-credit-account" required></select></label>
+        <label class="field"><span>บัญชีเดบิตที่ 2 (ไม่บังคับ)</span><select id="auto-description-debit-account-2"></select></label>
+        <label class="field"><span>บัญชีเครดิตที่ 2 (ไม่บังคับ)</span><select id="auto-description-credit-account-2"></select></label>
         <label class="field span-all"><span class="req">คำอธิบาย</span><input type="text" id="auto-description-text" placeholder="เช่น รับชำระค่าสินค้าจากลูกค้า" required></label>
       </div>
       <div class="form-actions"><button type="button" id="auto-description-cancel" class="secondary" hidden>ยกเลิก</button><button type="submit" id="auto-description-submit">เพิ่มคำอธิบาย</button></div>

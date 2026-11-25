@@ -4,7 +4,8 @@
  * - ข้อมูลกิจการ งวดบัญชี และอัตรา VAT เริ่มต้น
  * - บัญชีที่ใช้ลงบัญชีอัตโนมัติ (ลูกหนี้ เจ้าหนี้ ภาษี กำไรสะสม)
  * - ปิดงวดบัญชี (สร้างรายการปิดบัญชี) และล็อกงวด
- * - สำรอง/กู้คืนข้อมูลเป็นไฟล์ JSON
+ * - ซ่อมแซมลำดับเลขที่เอกสาร และสำรอง/กู้คืนข้อมูลเป็นไฟล์ JSON
+ * แบ่งเป็นแท็บ: ทั่วไป / ฟีเจอร์ / การปรับปรุง (จำแท็บไว้ใน URL hash)
  */
 import {
   DATA_COLLECTIONS,
@@ -18,7 +19,7 @@ import { authReady } from "../../src/core/auth.js";
 import { ACCOUNT_ROLES } from "../../src/accounting/constants.js";
 import { findAccountForRole, formatAccountLabel, renderAccountOptions } from "../../src/accounting/accounts.js";
 import { buildClosingLines, calculateClosingBalances } from "../../src/accounting/closing.js";
-import { isDateLocked } from "../../src/accounting/journal.js";
+import { isDateLocked, planDocumentNumberRepair } from "../../src/accounting/journal.js";
 import { PAYMENT_METHODS, THAI_BANKS, getDefaultSupplierPayment } from "../../src/accounting/payment-methods.js";
 import { sortEntriesByDate, upsertJournalEntry } from "../../src/accounting/posting.js";
 import { DEFAULT_CREDIT_DAYS } from "../../src/accounting/subledger.js";
@@ -29,7 +30,7 @@ import { byId } from "../../src/utils/dom.js";
 import { downloadJson } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
 
-const settingsForm = byId("settings-form");
+const settingsForms = [byId("settings-form"), byId("settings-features-form")];
 const supplierPaymentSelect = byId("settings-supplier-payment-method");
 const supplierBankSelect = byId("settings-supplier-bank-name");
 
@@ -130,12 +131,14 @@ function renderSettingsPage() {
   byId("settings-note").value = settings.note || "";
   byId("settings-vat-rate").value = settings.vatRate ?? 7;
   byId("settings-credit-days").value = settings.creditDays ?? DEFAULT_CREDIT_DAYS;
+  byId("settings-journal-account-search").checked = Boolean(settings.journalAccountSearch);
   if (!closingDateInput.value) closingDateInput.value = settings.periodEnd || "";
   renderAccountRoleFields();
   renderSupplierPaymentFields();
   renderLockStatus();
   renderClosingPreview();
   renderDataCounts();
+  renderDocumentNumberRepair();
 }
 
 /**
@@ -171,7 +174,7 @@ async function handleSettingsSubmit(event) {
 
   // เก็บเฉพาะบทบาทที่ผู้ใช้เลือกบัญชีเอง (ที่เว้นว่าง = ให้ระบบเลือกอัตโนมัติ)
   const accountMap = {};
-  settingsForm.querySelectorAll("[data-role]").forEach((select) => {
+  byId("settings-account-map").querySelectorAll("[data-role]").forEach((select) => {
     if (select.value) accountMap[select.dataset.role] = select.value;
   });
 
@@ -260,6 +263,97 @@ async function unlockPeriod() {
 }
 
 /* ------------------------------------------------------------------ */
+/* ซ่อมแซมลำดับเลขที่เอกสาร                                              */
+/* ------------------------------------------------------------------ */
+
+/** ผลตรวจล่าสุด — คำนวณใหม่เฉพาะเมื่อรายการหรือวันที่ปิดงวดเปลี่ยน (รายการมีหลายหมื่น) */
+let documentNumberCheck = { entries: null, lockDate: null, plan: null };
+function getDocumentNumberPlan() {
+  const lockDate = state.settings.lockDate || "";
+  if (documentNumberCheck.entries !== state.entries || documentNumberCheck.lockDate !== lockDate) {
+    documentNumberCheck = { entries: state.entries, lockDate, plan: planDocumentNumberRepair(state.entries) };
+  }
+  return documentNumberCheck.plan;
+}
+
+/** สถานะเลขที่เอกสาร: ไม่มีเลขที่ / ข้ามเลข / ไม่เรียงตามวันที่ / ปีเดือนไม่ตรงกับวันที่ / เลขซ้ำ */
+function renderDocumentNumberRepair() {
+  const plan = getDocumentNumberPlan();
+  const repairButton = byId("doc-number-repair");
+  repairButton.disabled = !plan.changedCount;
+  if (!plan.changedCount) {
+    byId("repair-status").innerHTML = '<span class="badge success dot">เรียงถูกต้องแล้ว</span>';
+    byId("repair-detail").textContent = "เลขที่เอกสารทุกรายการเรียงตามวันที่และต่อเนื่องแล้ว ไม่ต้องซ่อมแซม";
+    return;
+  }
+  const missingCount = state.entries.filter((entry) => !entry.docNo).length;
+  byId("repair-status").innerHTML = `<span class="badge warning dot">ต้องซ่อมแซม ${formatNumber(plan.changedCount)} รายการ</span>`;
+  byId("repair-detail").textContent = [
+    `${formatNumber(plan.changedCount)} รายการใน ${formatNumber(plan.monthCount)} เดือน มีเลขที่เอกสารไม่เรียงตามวันที่หรือข้ามเลข`,
+    missingCount ? `(รวมที่ยังไม่มีเลขที่ ${formatNumber(missingCount)} รายการ)` : "",
+  ].filter(Boolean).join(" ");
+}
+
+/** เรียงเลขที่เอกสารใหม่ทุกเดือน (ที่ยังไม่ปิดงวด) ให้ตรงตามลำดับวันที่ */
+async function repairDocumentNumbers() {
+  const plan = getDocumentNumberPlan();
+  if (!plan.changedCount) return;
+  const message = [
+    "เรียงเลขที่เอกสาร JV-ปีเดือน-ลำดับ ใหม่ให้ตรงตามวันที่ เริ่ม 0001 ทุกเดือน ไม่ข้ามเลข",
+    `• เปลี่ยนเลขที่ ${formatNumber(plan.changedCount)} รายการ ใน ${formatNumber(plan.monthCount)} เดือน`,
+    plan.descriptionUpdates ? `• แก้เลขที่ที่อ้างถึงในคำอธิบาย ${formatNumber(plan.descriptionUpdates)} รายการ` : null,
+    plan.skippedLockedMonths.length
+      ? `• ไม่แตะเดือนที่ปิดงวดแล้ว: ${plan.skippedLockedMonths.map((month) => `${month.slice(4)}/${month.slice(0, 4)}`).join(", ")}`
+      : null,
+    "• เลขที่ที่พิมพ์เองแบบอื่น (ไม่ใช่ JV-ปีเดือน-ลำดับ) คงเดิม",
+    "",
+    "เลขที่เดิมของรายการจะเปลี่ยน แนะนำให้ดาวน์โหลดไฟล์สำรองก่อน (การ์ดสำรอง / กู้คืนข้อมูล ด้านล่าง)",
+    "หากเปิดหน้าสมุดรายวันค้างไว้ ควรบันทึกหรือล้างฟอร์มที่กำลังกรอกก่อน",
+  ].filter((line) => line !== null).join("\n");
+  const confirmed = await confirmDialog(message, { title: "ซ่อมแซมลำดับเลขที่เอกสาร", confirmText: "ซ่อมแซม", tone: "primary" });
+  if (!confirmed) return;
+
+  const isSaved = await commitChanges({ entries: plan.entries });
+  renderSettingsPage();
+  if (isSaved) notifySuccess(`ซ่อมแซมเลขที่เอกสาร ${formatNumber(plan.changedCount)} รายการเรียบร้อย`);
+}
+
+/* ------------------------------------------------------------------ */
+/* แท็บ: ทั่วไป / ฟีเจอร์ / การปรับปรุง                                     */
+/* ------------------------------------------------------------------ */
+
+const settingsTabs = [...document.querySelectorAll(".settings-tabs [role=tab]")];
+const DEFAULT_TAB = "general";
+
+/** @param {string} tabName @param {{ focus?: boolean }} [options] */
+function selectTab(tabName, { focus = false } = {}) {
+  const activeTab = settingsTabs.find((tab) => tab.dataset.tab === tabName) || settingsTabs[0];
+  settingsTabs.forEach((tab) => {
+    const isActive = tab === activeTab;
+    tab.setAttribute("aria-selected", String(isActive));
+    tab.tabIndex = isActive ? 0 : -1;
+    byId(tab.getAttribute("aria-controls")).hidden = !isActive;
+  });
+  if (focus) activeTab.focus();
+  const hash = activeTab.dataset.tab === DEFAULT_TAB ? "" : `#${activeTab.dataset.tab}`;
+  if (location.hash !== hash) history.replaceState(null, "", `${location.pathname}${location.search}${hash}`);
+}
+
+settingsTabs.forEach((tab, index) => {
+  tab.addEventListener("click", () => selectTab(tab.dataset.tab));
+  // ลูกศรซ้าย/ขวา Home/End สลับแท็บ (ตามแบบแผน tablist)
+  tab.addEventListener("keydown", (event) => {
+    const lastIndex = settingsTabs.length - 1;
+    const nextIndex = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: lastIndex }[event.key];
+    if (nextIndex === undefined) return;
+    event.preventDefault();
+    selectTab(settingsTabs[(nextIndex + settingsTabs.length) % settingsTabs.length].dataset.tab, { focus: true });
+  });
+});
+selectTab(location.hash.slice(1) || DEFAULT_TAB);
+window.addEventListener("hashchange", () => selectTab(location.hash.slice(1) || DEFAULT_TAB));
+
+/* ------------------------------------------------------------------ */
 /* สำรองและกู้คืนข้อมูล                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -307,11 +401,19 @@ async function restoreBackup() {
 /* ผูกอีเวนต์                                                           */
 /* ------------------------------------------------------------------ */
 
-settingsForm.addEventListener("submit", handleSettingsSubmit);
+settingsForms.forEach((form) => form.addEventListener("submit", handleSettingsSubmit));
+// สวิตช์ "พิมพ์ค้นหาบัญชีในสมุดรายวัน": บันทึกทันทีที่กด (หน้าสมุดรายวันที่เปิดอยู่จะเปลี่ยนตามทันที)
+byId("settings-journal-account-search").addEventListener("change", (event) => {
+  const isEnabled = event.target.checked;
+  saveSettings({ journalAccountSearch: isEnabled }, isEnabled
+    ? "เปิดการพิมพ์ค้นหาบัญชีในสมุดรายวันแล้ว"
+    : "ปิดการพิมพ์ค้นหาบัญชีในสมุดรายวันแล้ว (เลือกจากรายการอย่างเดียว)");
+});
 closingDateInput.addEventListener("change", renderClosingPreview);
 byId("close-run").addEventListener("click", createClosingEntry);
 byId("lock-save").addEventListener("click", lockPeriod);
 byId("lock-clear").addEventListener("click", unlockPeriod);
+byId("doc-number-repair").addEventListener("click", repairDocumentNumbers);
 byId("backup-export").addEventListener("click", downloadBackup);
 backupFileInput.addEventListener("change", restoreBackup);
 

@@ -18,62 +18,93 @@
   <script src="../../src/components/date-input.js" defer></script>
   <main id="main">
     <div class="page-head">
-      <div><h2>การตั้งค่า</h2><p class="page-sub">ข้อมูลกิจการ งวดบัญชี การปิดบัญชี บัญชีสำหรับลงบัญชีอัตโนมัติ และการสำรองข้อมูล</p></div>
+      <div><h2>การตั้งค่า</h2><p class="page-sub">ข้อมูลกิจการ งวดบัญชี ฟีเจอร์ของระบบ และการปรับปรุงข้อมูล</p></div>
     </div>
-    <form id="settings-form">
-      <div class="settings-grid">
-        <div class="card stack"><h3>ข้อมูลกิจการ</h3>
-          <label class="field"><span>ชื่อกิจการ / บริษัท</span><input type="text" id="settings-company" placeholder="ระบุชื่อกิจการ"></label>
-          <label class="field"><span>เลขประจำตัวผู้เสียภาษี</span><input type="text" id="settings-tax-id" inputmode="numeric" placeholder="13 หลัก"></label>
-          <label class="field"><span>สกุลเงิน</span><input type="text" id="settings-currency" placeholder="THB"></label>
-          <label class="field"><span>หมายเหตุ</span><textarea id="settings-note" rows="2" placeholder="หมายเหตุเพิ่มเติม"></textarea></label>
-        </div>
-        <div class="card stack"><h3>งวดบัญชี</h3>
-          <p class="muted">ใช้เป็นช่วงเวลาเริ่มต้นของแดชบอร์ด และตัวเลือก “งวดบัญชี” ในหน้างบการเงิน</p>
-          <label class="field"><span>วันที่เริ่มต้นงวด</span><input type="date" id="settings-period-start"></label>
-          <label class="field"><span>วันที่สิ้นสุดงวด</span><input type="date" id="settings-period-end"></label>
-          <label class="field"><span>อัตรา VAT เริ่มต้น (%)</span><input type="number" id="settings-vat-rate" min="0" max="100" step="0.01"></label>
-          <label class="field"><span>เครดิตเทอมเริ่มต้น (วัน)</span><input type="number" id="settings-credit-days" min="0" max="365" step="1"><span class="hint-text">ใช้คำนวณวันครบกำหนดของลูกหนี้/เจ้าหนี้ เมื่อรายการในสมุดรายวันไม่ได้ระบุ</span></label>
-        </div>
-        <div class="card stack"><h3>ค่าเริ่มต้นซัพพลายเออร์</h3>
-          <p class="muted">ช่องทางการชำระเงินที่เลือกไว้ให้เมื่อเพิ่มซัพพลายเออร์ใหม่ (แก้รายตัวได้ในหน้ารายชื่อซัพพลายเออร์)</p>
-          <label class="field"><span>ช่องทางการชำระเงิน</span><select id="settings-supplier-payment-method"></select></label>
-          <label class="field"><span>ธนาคาร</span><select id="settings-supplier-bank-name"></select><span class="hint-text">ใช้เมื่อช่องทางเป็น “โอนเข้าบัญชีธนาคาร”</span></label>
-        </div>
-      </div>
-      <div class="card"><div class="card-head"><h3>บัญชีสำหรับลงบัญชีอัตโนมัติ</h3><span class="muted">ใช้กับลูกหนี้ เจ้าหนี้ ภาษี และการปิดบัญชี · เว้นว่างเพื่อให้ระบบเลือกจากรหัสมาตรฐาน</span></div>
-        <div class="form-grid" id="settings-account-map"></div>
-      </div>
-      <div class="form-actions" style="margin:0 0 18px"><button type="submit">บันทึกการตั้งค่า</button></div>
-    </form>
-
-    <div class="card" id="close-card">
-      <div class="card-head"><h3>ปิดงวดบัญชี</h3><span id="lock-status"></span></div>
-      <div class="grid-2">
-        <div class="stack">
-          <h4>1. สร้างรายการปิดบัญชี</h4>
-          <p class="muted">โอนยอดรายได้และค่าใช้จ่ายทั้งหมด ณ วันสิ้นงวดเข้าบัญชีกำไรสะสม (รายการประเภท “ปิดบัญชี”)</p>
-          <label class="field" style="max-width:240px"><span>ปิดบัญชี ณ วันที่</span><input type="date" id="close-date"></label>
-          <div id="close-preview" class="muted"></div>
-          <label class="check-field"><input type="checkbox" id="close-lock" checked> <span>ล็อกงวดถึงวันที่นี้หลังปิดบัญชี</span></label>
-          <div><button type="button" id="close-run">สร้างรายการปิดบัญชี</button></div>
-        </div>
-        <div class="stack">
-          <h4>2. ล็อกงวดบัญชี</h4>
-          <p class="muted">รายการที่ลงวันที่ถึงวันล็อกจะแก้ไข ลบ หรือเพิ่มไม่ได้ ป้องกันตัวเลขในงบที่ปิดแล้วเปลี่ยน</p>
-          <label class="field" style="max-width:240px"><span>ล็อกรายการถึงวันที่</span><input type="date" id="lock-date"></label>
-          <div class="backup-actions"><button type="button" id="lock-save" class="secondary">บันทึกวันล็อก</button><button type="button" id="lock-clear" class="ghost">ปลดล็อก</button></div>
-        </div>
-      </div>
+    <div class="settings-tabs" role="tablist" aria-label="หมวดการตั้งค่า">
+      <button type="button" role="tab" id="settings-tab-general" aria-controls="settings-panel-general" data-tab="general">ทั่วไป</button>
+      <button type="button" role="tab" id="settings-tab-features" aria-controls="settings-panel-features" data-tab="features">ฟีเจอร์</button>
+      <button type="button" role="tab" id="settings-tab-maintenance" aria-controls="settings-panel-maintenance" data-tab="maintenance">การปรับปรุง</button>
     </div>
 
-    <div class="card stack backup-card">
-      <h3>สำรอง / กู้คืนข้อมูล</h3><p class="muted">ดาวน์โหลดข้อมูลทั้งหมดเป็นไฟล์ JSON เก็บไว้ หรือกู้คืนจากไฟล์สำรอง (จะเขียนทับข้อมูลปัจจุบันทั้งหมด)</p>
-      <div class="backup-actions"><button type="button" id="backup-export" class="secondary">ดาวน์โหลดไฟล์สำรอง</button>
-        <label class="file-button">กู้คืนจากไฟล์<input type="file" id="backup-import" accept=".json,application/json"></label></div>
-      <p id="backup-msg" class="muted"></p>
-    </div>
-    <div class="card settings-info"><div class="card-head"><h3>ข้อมูลระบบ</h3><span class="muted" id="settings-user"></span></div><p class="muted" style="margin-bottom:12px">ข้อมูลจัดเก็บใน Firebase Firestore และเก็บสำเนาไว้ในเครื่องเพื่อให้เปิดหน้าได้ทันที</p><div id="settings-stats" class="info-grid"></div></div>
+    <section class="settings-panel" role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general">
+      <form class="settings-form" id="settings-form">
+        <div class="settings-grid">
+          <div class="card stack"><h3>ข้อมูลกิจการ</h3>
+            <label class="field"><span>ชื่อกิจการ / บริษัท</span><input type="text" id="settings-company" placeholder="ระบุชื่อกิจการ"></label>
+            <label class="field"><span>เลขประจำตัวผู้เสียภาษี</span><input type="text" id="settings-tax-id" inputmode="numeric" placeholder="13 หลัก"></label>
+            <label class="field"><span>สกุลเงิน</span><input type="text" id="settings-currency" placeholder="THB"></label>
+            <label class="field"><span>หมายเหตุ</span><textarea id="settings-note" rows="2" placeholder="หมายเหตุเพิ่มเติม"></textarea></label>
+          </div>
+          <div class="card stack"><h3>งวดบัญชี</h3>
+            <p class="muted">ใช้เป็นช่วงเวลาเริ่มต้นของแดชบอร์ด และตัวเลือก “งวดบัญชี” ในหน้างบการเงิน</p>
+            <label class="field"><span>วันที่เริ่มต้นงวด</span><input type="date" id="settings-period-start"></label>
+            <label class="field"><span>วันที่สิ้นสุดงวด</span><input type="date" id="settings-period-end"></label>
+            <label class="field"><span>อัตรา VAT เริ่มต้น (%)</span><input type="number" id="settings-vat-rate" min="0" max="100" step="0.01"></label>
+            <label class="field"><span>เครดิตเทอมเริ่มต้น (วัน)</span><input type="number" id="settings-credit-days" min="0" max="365" step="1"><span class="hint-text">ใช้คำนวณวันครบกำหนดของลูกหนี้/เจ้าหนี้ เมื่อรายการในสมุดรายวันไม่ได้ระบุ</span></label>
+          </div>
+        </div>
+        <div class="form-actions" style="margin:0 0 18px"><button type="submit">บันทึกการตั้งค่า</button></div>
+      </form>
+
+      <div class="card" id="close-card">
+        <div class="card-head"><h3>ปิดงวดบัญชี</h3><span id="lock-status"></span></div>
+        <div class="grid-2">
+          <div class="stack">
+            <h4>1. สร้างรายการปิดบัญชี</h4>
+            <p class="muted">โอนยอดรายได้และค่าใช้จ่ายทั้งหมด ณ วันสิ้นงวดเข้าบัญชีกำไรสะสม (รายการประเภท “ปิดบัญชี”)</p>
+            <label class="field" style="max-width:240px"><span>ปิดบัญชี ณ วันที่</span><input type="date" id="close-date"></label>
+            <div id="close-preview" class="muted"></div>
+            <label class="check-field"><input type="checkbox" id="close-lock" checked> <span>ล็อกงวดถึงวันที่นี้หลังปิดบัญชี</span></label>
+            <div><button type="button" id="close-run">สร้างรายการปิดบัญชี</button></div>
+          </div>
+          <div class="stack">
+            <h4>2. ล็อกงวดบัญชี</h4>
+            <p class="muted">รายการที่ลงวันที่ถึงวันล็อกจะแก้ไข ลบ หรือเพิ่มไม่ได้ ป้องกันตัวเลขในงบที่ปิดแล้วเปลี่ยน</p>
+            <label class="field" style="max-width:240px"><span>ล็อกรายการถึงวันที่</span><input type="date" id="lock-date"></label>
+            <div class="backup-actions"><button type="button" id="lock-save" class="secondary">บันทึกวันล็อก</button><button type="button" id="lock-clear" class="ghost">ปลดล็อก</button></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card settings-info"><div class="card-head"><h3>ข้อมูลระบบ</h3><span class="muted" id="settings-user"></span></div><p class="muted" style="margin-bottom:12px">ข้อมูลจัดเก็บใน Firebase Firestore และเก็บสำเนาไว้ในเครื่องเพื่อให้เปิดหน้าได้ทันที</p><div id="settings-stats" class="info-grid"></div></div>
+    </section>
+
+    <section class="settings-panel" role="tabpanel" id="settings-panel-features" aria-labelledby="settings-tab-features" hidden>
+      <form class="settings-form" id="settings-features-form">
+        <div class="settings-grid">
+          <div class="card stack"><h3>ค่าเริ่มต้นซัพพลายเออร์</h3>
+            <p class="muted">ช่องทางการชำระเงินที่เลือกไว้ให้เมื่อเพิ่มซัพพลายเออร์ใหม่ (แก้รายตัวได้ในหน้ารายชื่อซัพพลายเออร์)</p>
+            <label class="field"><span>ช่องทางการชำระเงิน</span><select id="settings-supplier-payment-method"></select></label>
+            <label class="field"><span>ธนาคาร</span><select id="settings-supplier-bank-name"></select><span class="hint-text">ใช้เมื่อช่องทางเป็น “โอนเข้าบัญชีธนาคาร”</span></label>
+          </div>
+          <div class="card stack"><h3>สมุดรายวันทั่วไป</h3>
+            <p class="muted">การป้อนรายการในหน้าสมุดรายวันทั่วไป (มีผลทันทีที่กดเปิด/ปิด ไม่ต้องกดบันทึกการตั้งค่า)</p>
+            <label class="switch"><input type="checkbox" id="settings-journal-account-search"><span class="switch-track" aria-hidden="true"></span><span>พิมพ์ค้นหาบัญชีในสมุดรายวัน</span></label>
+            <span class="hint-text">ปิด = ช่องบัญชีเลือกจากรายการอย่างเดียว · เปิด = พิมพ์รหัสหรือชื่อบัญชีเพื่อค้นหาได้</span>
+          </div>
+        </div>
+        <div class="card"><div class="card-head"><h3>บัญชีสำหรับลงบัญชีอัตโนมัติ</h3><span class="muted">ใช้กับลูกหนี้ เจ้าหนี้ ภาษี และการปิดบัญชี · เว้นว่างเพื่อให้ระบบเลือกจากรหัสมาตรฐาน</span></div>
+          <div class="form-grid" id="settings-account-map"></div>
+        </div>
+        <div class="form-actions" style="margin:0 0 18px"><button type="submit">บันทึกการตั้งค่า</button></div>
+      </form>
+    </section>
+
+    <section class="settings-panel" role="tabpanel" id="settings-panel-maintenance" aria-labelledby="settings-tab-maintenance" hidden>
+      <div class="card stack" id="repair-card">
+        <div class="card-head"><h3>ซ่อมแซมลำดับเลขที่เอกสาร</h3><span id="repair-status"></span></div>
+        <p class="muted">เรียงเลขที่เอกสาร JV-ปีเดือน-ลำดับ ใหม่ให้ตรงตามวันที่ เริ่ม 0001 ทุกเดือน ไม่ข้ามเลข — แก้กรณีไม่มีเลขที่ ข้ามเลข ไม่เรียงตามวันที่ ปีเดือนในเลขไม่ตรงกับวันที่ หรือเลขซ้ำ (ไม่แตะเดือนที่ปิดงวดแล้ว และเลขที่ที่พิมพ์เองแบบอื่น)</p>
+        <p id="repair-detail" class="muted"></p>
+        <div><button type="button" id="doc-number-repair">ซ่อมแซมลำดับเลขที่เอกสาร</button></div>
+      </div>
+
+      <div class="card stack backup-card">
+        <h3>สำรอง / กู้คืนข้อมูล</h3><p class="muted">ดาวน์โหลดข้อมูลทั้งหมดเป็นไฟล์ JSON เก็บไว้ หรือกู้คืนจากไฟล์สำรอง (จะเขียนทับข้อมูลปัจจุบันทั้งหมด)</p>
+        <div class="backup-actions"><button type="button" id="backup-export" class="secondary">ดาวน์โหลดไฟล์สำรอง</button>
+          <label class="file-button">กู้คืนจากไฟล์<input type="file" id="backup-import" accept=".json,application/json"></label></div>
+        <p id="backup-msg" class="muted"></p>
+      </div>
+    </section>
   </main>
   <script type="module" src="settings.js"></script>
 </body>

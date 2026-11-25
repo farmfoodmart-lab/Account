@@ -60,3 +60,103 @@ export function isDateLocked(date) {
 export function getLockedPeriodMessage() {
   return `งวดบัญชีถึงวันที่ ${formatDate(state.settings.lockDate)} ถูกปิดแล้ว แก้ไขหรือเพิ่มรายการในช่วงนี้ไม่ได้ (ปลดล็อกได้ที่หน้าการตั้งค่า)`;
 }
+
+/* ------------------------------------------------------------------ */
+/* ซ่อมแซมลำดับเลขที่เอกสาร                                              */
+/* ------------------------------------------------------------------ */
+
+/** เลขที่ใบสำคัญมาตรฐาน JV-YYYYMM-#### (กลุ่ม 1 = ปีเดือน, กลุ่ม 2 = ลำดับ) */
+const JOURNAL_NUMBER_PATTERN = /^JV-(\d{6})-(\d+)$/;
+/** เลขที่ใบสำคัญที่เขียนอยู่ในข้อความ (เช่น คำอธิบาย "รับชำระ JV-202602-0015 ...") */
+const JOURNAL_NUMBER_IN_TEXT_PATTERN = /JV-\d{6}-\d{4,}/g;
+
+/**
+ * วางแผนเรียงเลขที่ใบสำคัญใหม่ ให้แต่ละเดือนเรียงตามวันที่ เริ่ม 0001 ต่อเนื่องไม่ข้าม
+ * - รายการเรียงตาม วันที่ → ลำดับเดิม (วันเดียวกันคงลำดับเดิม) → เวลาที่สร้าง
+ * - เดือนตามวันที่ของรายการ (เลขที่ปีเดือนไม่ตรงกับวันที่ จะได้เลขของเดือนที่ถูกต้อง)
+ * - รายการที่ยังไม่มีเลขที่ ได้เลขที่ด้วย
+ * - ไม่แตะ: เลขที่รูปแบบอื่นที่ผู้ใช้พิมพ์เอง และทั้งเดือนที่มีรายการอยู่ในงวดที่ปิดแล้ว
+ * - เลขที่ที่เขียนอยู่ในคำอธิบายของรายการอื่น (เช่น รับชำระ/กลับรายการ) เปลี่ยนตามเลขใหม่
+ * ฟังก์ชันนี้ไม่แก้ state — คืนอาร์เรย์ใหม่สำหรับบันทึก
+ * @param {object[]} entries
+ * @returns {{ entries: object[], changedCount: number, monthCount: number, skippedLockedMonths: string[],
+ *             descriptionUpdates: number }}
+ */
+export function planDocumentNumberRepair(entries) {
+  const monthOf = (entry) => (toIsoDate(entry.date) || "").slice(0, 7).replace("-", "");
+  const isRenumberable = (entry) => !entry.docNo || JOURNAL_NUMBER_PATTERN.test(String(entry.docNo));
+
+  // จัดกลุ่มตามเดือนของวันที่ / เดือนที่มีรายการในงวดที่ปิดแล้ว → ข้ามทั้งเดือน
+  const groups = new Map();
+  const lockedMonths = new Set();
+  entries.forEach((entry, index) => {
+    const month = monthOf(entry);
+    if (!month || !isRenumberable(entry)) return;
+    if (isDateLocked(entry.date)) lockedMonths.add(month);
+    if (!groups.has(month)) groups.set(month, []);
+    groups.get(month).push({ entry, index });
+  });
+
+  // เลขที่ที่ไม่ได้อยู่ในชุดที่เรียงใหม่ (เดือนที่ล็อก / รูปแบบอื่น) → ห้ามซ้ำ
+  const renumberedIndexes = new Set();
+  groups.forEach((items, month) => {
+    if (!lockedMonths.has(month)) items.forEach((item) => renumberedIndexes.add(item.index));
+  });
+  const reservedNumbers = new Set(entries
+    .filter((entry, index) => !renumberedIndexes.has(index) && entry.docNo)
+    .map((entry) => String(entry.docNo)));
+
+  const sequenceOf = (entry, month) => {
+    const match = String(entry.docNo || "").match(JOURNAL_NUMBER_PATTERN);
+    return match && match[1] === month ? parseInt(match[2], 10) : Number.MAX_SAFE_INTEGER;
+  };
+  const newNumbers = new Map(); // index → เลขที่ใหม่
+  const renamedNumbers = new Map(); // เลขที่เดิม → เลขที่ใหม่ (ใช้แก้ข้อความคำอธิบาย)
+  let monthCount = 0;
+  groups.forEach((items, month) => {
+    if (lockedMonths.has(month)) return;
+    items.sort((left, right) => (toIsoDate(left.entry.date) || "").localeCompare(toIsoDate(right.entry.date) || "")
+      || sequenceOf(left.entry, month) - sequenceOf(right.entry, month)
+      || String(left.entry.createdAt || "").localeCompare(String(right.entry.createdAt || ""))
+      || left.index - right.index);
+    let sequence = 0;
+    let isMonthChanged = false;
+    items.forEach(({ entry, index }) => {
+      let documentNumber;
+      do {
+        sequence += 1;
+        documentNumber = `JV-${month}-${String(sequence).padStart(4, "0")}`;
+      } while (reservedNumbers.has(documentNumber));
+      if (documentNumber !== entry.docNo) {
+        newNumbers.set(index, documentNumber);
+        if (entry.docNo) renamedNumbers.set(String(entry.docNo), documentNumber);
+        isMonthChanged = true;
+      }
+    });
+    if (isMonthChanged) monthCount += 1;
+  });
+
+  let descriptionUpdates = 0;
+  const nextEntries = entries.map((entry, index) => {
+    const documentNumber = newNumbers.get(index);
+    let { desc } = entry;
+    // แก้เลขที่ในคำอธิบาย (แทนทีเดียวทั้งข้อความ จึงไม่แทนซ้ำซ้อน) — ไม่แตะรายการในงวดที่ปิดแล้ว
+    if (renamedNumbers.size && desc && !isDateLocked(entry.date)) {
+      const updatedDesc = String(desc).replace(JOURNAL_NUMBER_IN_TEXT_PATTERN, (number) => renamedNumbers.get(number) || number);
+      if (updatedDesc !== desc) {
+        desc = updatedDesc;
+        descriptionUpdates += 1;
+      }
+    }
+    if (!documentNumber && desc === entry.desc) return entry;
+    return { ...entry, ...(documentNumber ? { docNo: documentNumber } : {}), desc };
+  });
+
+  return {
+    entries: nextEntries,
+    changedCount: newNumbers.size,
+    monthCount,
+    skippedLockedMonths: [...lockedMonths].filter((month) => groups.has(month)).sort(),
+    descriptionUpdates,
+  };
+}

@@ -34,6 +34,9 @@ const itemInput = byId("auto-description-item");
 const itemList = byId("auto-description-item-list");
 const debitAccountSelect = byId("auto-description-debit-account");
 const creditAccountSelect = byId("auto-description-credit-account");
+// บัญชีที่ 2 (ไม่บังคับ) — เก็บเป็น debitAccountId2 / creditAccountId2 เติมลงบรรทัดที่ 3 / 4 ในสมุดรายวัน
+const debitAccountSelect2 = byId("auto-description-debit-account-2");
+const creditAccountSelect2 = byId("auto-description-credit-account-2");
 const descriptionInput = byId("auto-description-text");
 const customerTableBody = document.querySelector("#auto-description-table tbody");
 const itemTableBody = document.querySelector("#auto-description-item-table tbody");
@@ -58,6 +61,8 @@ function renderFormOptions() {
   const selectedCustomer = customerSelect.value;
   const selectedDebitAccount = debitAccountSelect.value;
   const selectedCreditAccount = creditAccountSelect.value;
+  const selectedDebitAccount2 = debitAccountSelect2.value;
+  const selectedCreditAccount2 = creditAccountSelect2.value;
   customerSelect.innerHTML = `<option value="">-- เลือกลูกค้า --</option>${renderCustomerOptions()}`;
   // ชื่อในแม่แบบที่สร้างจากสมุดรายวัน (ไม่มีในทะเบียน/ไฟล์) → เพิ่มเป็นตัวเลือก เพื่อให้แก้ไขแม่แบบนั้นได้
   const existingValues = new Set([...customerSelect.options].map((option) => option.value));
@@ -73,6 +78,8 @@ function renderFormOptions() {
   itemList.innerHTML = getTemplateItemNames().map((name) => `<option value="${escapeHtml(name)}"></option>`).join("");
   debitAccountSelect.innerHTML = renderAccountOptions(selectedDebitAccount);
   creditAccountSelect.innerHTML = renderAccountOptions(selectedCreditAccount);
+  debitAccountSelect2.innerHTML = renderAccountOptions(selectedDebitAccount2);
+  creditAccountSelect2.innerHTML = renderAccountOptions(selectedCreditAccount2);
 }
 
 function resetForm() {
@@ -94,6 +101,13 @@ function renderAccountCell(accountId) {
     : '<span class="unbalanced">(ไม่พบบัญชี)</span>';
 }
 
+/** บัญชีหลัก + บัญชีที่ 2 (ถ้ามี) ในเซลล์เดียว */
+function renderAccountCells(accountId, accountId2) {
+  return accountId2
+    ? `${renderAccountCell(accountId)}<span class="cell-sub">${renderAccountCell(accountId2)}</span>`
+    : renderAccountCell(accountId);
+}
+
 /**
  * @param {object[]} rules
  * @param {(rule: object) => string} getName ชื่อในคอลัมน์แรก
@@ -103,8 +117,8 @@ function renderRuleRows(rules, getName, emptyText) {
   return rules.length
     ? rules.map((rule) => `<tr>
         <td>${escapeHtml(getName(rule))}</td>
-        <td>${renderAccountCell(rule.debitAccountId)}</td>
-        <td>${renderAccountCell(rule.creditAccountId)}</td>
+        <td>${renderAccountCells(rule.debitAccountId, rule.debitAccountId2)}</td>
+        <td>${renderAccountCells(rule.creditAccountId, rule.creditAccountId2)}</td>
         <td>${escapeHtml(rule.text || "")}</td>
         <td class="actions-cell">
           <button type="button" class="small secondary" data-edit-rule="${escapeHtml(rule.id)}">แก้ไข</button>
@@ -143,6 +157,8 @@ function startEditingRule(rule) {
   itemInput.value = isItem ? rule.itemName.trim() : "";
   debitAccountSelect.value = rule.debitAccountId || "";
   creditAccountSelect.value = rule.creditAccountId || "";
+  debitAccountSelect2.value = rule.debitAccountId2 || "";
+  creditAccountSelect2.value = rule.creditAccountId2 || "";
   descriptionInput.value = rule.text || "";
   submitButton.textContent = "บันทึกการแก้ไข";
   cancelButton.hidden = false;
@@ -196,7 +212,17 @@ async function handleFormSubmit(event) {
     return;
   }
 
-  const ruleData = { debitAccountId, creditAccountId, text, ...targetResult.target };
+  // บัญชีที่ 2 ไม่บังคับ: ใส่เฉพาะเมื่อเลือกไว้
+  const debitAccountId2 = debitAccountSelect2.value;
+  const creditAccountId2 = creditAccountSelect2.value;
+  const ruleData = {
+    debitAccountId,
+    creditAccountId,
+    ...(debitAccountId2 ? { debitAccountId2 } : {}),
+    ...(creditAccountId2 ? { creditAccountId2 } : {}),
+    text,
+    ...targetResult.target,
+  };
   const isEditing = Boolean(editingRuleId);
   const rules = isEditing
     // สร้างแม่แบบใหม่ทั้งก้อน (ไม่ใช้ข้อมูลเดิมที่อาจค้างอยู่ รวมถึงฟิลด์ keyword รุ่นเก่า)
