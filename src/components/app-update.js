@@ -13,7 +13,7 @@ import { confirmDialog } from "./dialogs.js";
 import { notify, notifyError, notifySuccess } from "./notifications.js";
 
 /** ชื่อบัญชี/ชื่อ repository บน GitHub (ต้องเป็น public) */
-const UPDATE_REPO = "farmfoodmart-lab/Account.ai";
+const UPDATE_REPO = "farmfoodmart-lab/Account";
 const UPDATE_BRANCH = "main";
 /** ไฟล์ที่ต้องมีในโฟลเดอร์โปรแกรม (ใช้ตรวจว่าเลือกโฟลเดอร์ถูก) */
 const APP_MARKER_FILE = "Accounting.html";
@@ -152,7 +152,15 @@ function markUpdateAvailable(version) {
 
 /** @returns {Promise<object | null>} ข้อมูลเวอร์ชันใหม่ หรือ null ถ้าใช้เวอร์ชันล่าสุดแล้ว */
 async function fetchNewerRelease() {
-  const release = await fetchJson(rawUrl("version.json"));
+  let release;
+  try {
+    release = await fetchJson(rawUrl("version.json"));
+  } catch (error) {
+    if (String(error && error.message).includes("404")) {
+      throw new Error(`ไม่พบข้อมูลเวอร์ชันบน GitHub (${UPDATE_REPO}) — repository ยังไม่ได้สร้าง ยังเป็น Private หรือยังไม่ได้ push version.json ขึ้น branch ${UPDATE_BRANCH}`);
+    }
+    throw error;
+  }
   if (!release || !release.version) throw new Error("ข้อมูลเวอร์ชันบน GitHub ไม่ถูกต้อง");
   return compareVersions(release.version, currentVersion) > 0 ? release : null;
 }
