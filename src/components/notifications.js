@@ -62,8 +62,7 @@ export function logAlert(message, { title = "แจ้งเตือน" } = {}
 
 /**
  * การแจ้งเตือนแบบ "สถานะค้าง" ในกระดิ่ง: มีได้รายการเดียวต่อ id อัปเดตแทนที่ ไม่ซ้อนกัน
- * - ข้อความเปลี่ยน / เพิ่งเกิดใหม่ → ขึ้นเป็นยังไม่ได้อ่าน
- * - ข้อความเดิม → คงสถานะอ่านแล้วไว้ (ไม่เด้งตัวเลขบนกระดิ่งซ้ำทุกครั้งที่เปิดหน้า)
+ * - ค้างเป็นสีแดงบนกระดิ่งตลอด (เปิดดูแล้วก็ยังนับเป็นยังไม่ได้อ่าน และลบเองไม่ได้) จนกว่าจะเรียก clearStandingAlert
  * @param {string} id รหัสคงที่ของเรื่องนี้ เช่น "doc-number-repair"
  * @param {string} message
  * @param {{ title?: string, page?: string, pageTitle?: string }} [options] page = ลิงก์ไปหน้าที่แก้ไขได้
@@ -72,7 +71,7 @@ export function setStandingAlert(id, message, { title = "แจ้งเตื�
   try {
     const alerts = JSON.parse(localStorage.getItem(ALERT_STORAGE_KEY) || "[]");
     const existing = alerts.find((alert) => alert.id === id);
-    if (existing && existing.message === message && existing.title === title) return;
+    if (existing && existing.sticky && existing.message === message && existing.title === title) return;
     const alert = {
       id,
       time: Date.now(),
@@ -81,6 +80,7 @@ export function setStandingAlert(id, message, { title = "แจ้งเตื�
       page,
       pageTitle: pageTitle || document.title.split("·")[0].trim(),
       read: false,
+      sticky: true, // app-shell.js: นับเป็นยังไม่ได้อ่านเสมอ ซ่อนปุ่มลบ และ "ล้างทั้งหมด" ไม่ลบ
     };
     const otherAlerts = alerts.filter((item) => item.id !== id);
     localStorage.setItem(ALERT_STORAGE_KEY, JSON.stringify([alert, ...otherAlerts].slice(0, MAX_ALERTS)));

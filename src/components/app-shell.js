@@ -444,9 +444,12 @@
     return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   }
 
-  /** ตัวเลขสีแดงบนกระดิ่ง = จำนวนที่ยังไม่ได้อ่าน */
+  /** การแจ้งเตือนแบบสถานะค้าง (เช่น ต้องซ่อมแซมเลขที่เอกสาร) — เป็นสีแดงจนกว่าปัญหาจะหาย ลบเองไม่ได้ */
+  const isUnread = (alert) => alert.sticky || !alert.read;
+
+  /** ตัวเลขสีแดงบนกระดิ่ง = จำนวนที่ยังไม่ได้อ่าน (รวมการแจ้งเตือนแบบสถานะค้างเสมอ) */
   function renderAlertBadges() {
-    const unreadCount = readAlerts().filter((alert) => !alert.read).length;
+    const unreadCount = readAlerts().filter(isUnread).length;
     document.querySelectorAll("[data-alert-bell]").forEach((bell) => {
       const badge = bell.querySelector(".alert-badge");
       badge.hidden = unreadCount === 0;
@@ -462,10 +465,10 @@
   function renderAlertPanel() {
     const alerts = readAlerts();
     const itemsHtml = alerts.length
-      ? alerts.map((alert) => `<li class="alert-item${alert.read ? "" : " is-unread"}">
+      ? alerts.map((alert) => `<li class="alert-item${isUnread(alert) ? " is-unread" : ""}">
           <div class="alert-item-head">
             <strong>${escapeText(alert.title || "แจ้งเตือน")}${alert.count > 1 ? ` <span class="alert-count">×${alert.count}</span>` : ""}</strong>
-            <button type="button" class="alert-remove" data-remove-alert="${escapeText(alert.id)}" aria-label="ลบรายการนี้" title="ลบรายการนี้">×</button>
+            ${alert.sticky ? "" : `<button type="button" class="alert-remove" data-remove-alert="${escapeText(alert.id)}" aria-label="ลบรายการนี้" title="ลบรายการนี้">×</button>`}
           </div>
           <p>${escapeText(alert.message)}</p>
           <small>${formatAlertTime(alert.time)}${alert.page ? ` · <a href="${escapeText(alert.page)}">${escapeText(alert.pageTitle || "เปิดหน้า")}</a>` : ""}</small>
@@ -473,7 +476,7 @@
       : '<li class="alert-empty">ไม่มีการแจ้งเตือนที่ผิดปกติ</li>';
     alertPanel.innerHTML = `
       <div class="alert-panel-head"><strong>การแจ้งเตือนที่ผิดปกติ</strong>
-        ${alerts.length ? '<button type="button" class="ghost small" data-clear-alerts>ล้างทั้งหมด</button>' : ""}</div>
+        ${alerts.some((alert) => !alert.sticky) ? '<button type="button" class="ghost small" data-clear-alerts>ล้างทั้งหมด</button>' : ""}</div>
       <ul class="alert-list">${itemsHtml}</ul>`;
   }
 
@@ -511,10 +514,10 @@
     alertPanel.addEventListener("click", (event) => {
       const removeButton = event.target.closest("[data-remove-alert]");
       if (removeButton) {
-        writeAlerts(readAlerts().filter((alert) => alert.id !== removeButton.dataset.removeAlert));
+        writeAlerts(readAlerts().filter((alert) => alert.sticky || alert.id !== removeButton.dataset.removeAlert));
         renderAlertPanel();
       } else if (event.target.closest("[data-clear-alerts]")) {
-        writeAlerts([]);
+        writeAlerts(readAlerts().filter((alert) => alert.sticky)); // สถานะค้างอยู่จนกว่าจะแก้ปัญหา
         renderAlertPanel();
       }
     });
