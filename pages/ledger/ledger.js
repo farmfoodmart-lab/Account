@@ -2,7 +2,8 @@
  * @file หน้า "บัญชีแยกประเภท" — ความเคลื่อนไหวและยอดคงเหลือของแต่ละบัญชี
  *
  * ยอดคงเหลือนับเฉพาะรายการในช่วงที่เลือก (ค่าเริ่มต้น = เดือนล่าสุด)
- * ติ๊ก "รวมยอดยกมา" เพื่อนับรายการก่อน "ตั้งแต่วันที่" เป็นยอดยกมาด้วย (ยอดสะสม)
+ * เปิดสวิตช์ "ยอดยกมา" → นับรายการก่อน "ตั้งแต่วันที่" เป็นยอดยกมา (ยอดสะสม)
+ *   และแสดงยอดยกมาเป็นบรรทัดแรกของแต่ละบัญชี (จำสถานะสวิตช์ไว้ในเครื่อง)
  *
  * เพื่อให้รองรับข้อมูลจำนวนมาก:
  * - สร้างดัชนี "บัญชี → รายการ" ครั้งเดียวต่อการโหลด (ไม่ต้องวนทุกรายการซ้ำทุกบัญชี)
@@ -31,6 +32,14 @@ const hideInactiveCheckbox = byId("ledger-hide-empty");
 const includeOpeningCheckbox = byId("ledger-include-opening");
 const ledgerContainer = byId("ledger-view");
 const toggleAllButton = byId("ledger-toggle-all");
+
+/** จำสถานะสวิตช์ "ยอดยกมา" ไว้ในเครื่อง (ค่าเริ่มต้น = เปิด) */
+const INCLUDE_OPENING_STORAGE_KEY = "ledger-include-opening";
+try {
+  includeOpeningCheckbox.checked = localStorage.getItem(INCLUDE_OPENING_STORAGE_KEY) !== "0";
+} catch {
+  includeOpeningCheckbox.checked = true; // เบราว์เซอร์ปิดกั้น localStorage → ใช้ค่าเริ่มต้น (เปิด)
+}
 
 /**
  * ดัชนีรายการของแต่ละบัญชี เรียงตามวันที่
@@ -134,8 +143,9 @@ function renderAccountDetail(account) {
   const ledger = calculateAccountLedger(account);
   if (hasNoActivity(ledger)) return '<p class="ledger-empty">ไม่มีความเคลื่อนไหวในช่วงที่เลือก</p>';
 
-  const openingRow = fromDateInput.value && includeOpeningCheckbox.checked
-    ? `<tr class="opening"><td>${escapeHtml(formatDate(fromDateInput.value))}</td><td></td><td>ยอดยกมา</td><td></td><td></td><td class="right">${renderBalance(account, ledger.openingBalance)}</td></tr>`
+  // เปิดสวิตช์ "ยอดยกมา" → บรรทัดแรกของทุกบัญชีเป็นยอดยกมา (แม้เป็น 0)
+  const openingRow = includeOpeningCheckbox.checked
+    ? `<tr class="opening"><td class="nowrap">${fromDateInput.value ? escapeHtml(formatDate(fromDateInput.value)) : ""}</td><td></td><td>ยอดยกมา</td><td></td><td></td><td class="right">${renderBalance(account, ledger.openingBalance)}</td></tr>`
     : "";
   const postingRows = ledger.rows.map((row) => `<tr>
     <td class="nowrap">${escapeHtml(formatDate(row.entry.date))}</td>
@@ -247,8 +257,8 @@ function exportCsv() {
   const rows = [];
   getFilteredAccounts().sort(compareAccounts).forEach((account) => {
     const ledger = calculateAccountLedger(account);
-    if (fromDateInput.value && includeOpeningCheckbox.checked) {
-      rows.push([account.code, account.name, formatDate(fromDateInput.value), "", "ยอดยกมา", "", "", ledger.openingBalance]);
+    if (includeOpeningCheckbox.checked) {
+      rows.push([account.code, account.name, fromDateInput.value ? formatDate(fromDateInput.value) : "", "", "ยอดยกมา", "", "", ledger.openingBalance]);
     }
     ledger.rows.forEach((row) => rows.push([
       account.code, account.name, formatDate(row.entry.date), row.entry.docNo || "", row.entry.desc || "",
@@ -281,7 +291,14 @@ accountSelect.addEventListener("change", renderLedger);
 fromDateInput.addEventListener("change", renderLedger);
 toDateInput.addEventListener("change", renderLedger);
 hideInactiveCheckbox.addEventListener("change", renderLedger);
-includeOpeningCheckbox.addEventListener("change", renderLedger);
+includeOpeningCheckbox.addEventListener("change", () => {
+  try {
+    localStorage.setItem(INCLUDE_OPENING_STORAGE_KEY, includeOpeningCheckbox.checked ? "1" : "0");
+  } catch {
+    // เบราว์เซอร์ปิดกั้นการจำค่า → ใช้ได้เฉพาะครั้งนี้
+  }
+  renderLedger();
+});
 searchInput.addEventListener("input", debounce(renderLedger, 200));
 
 if (await loadData(["accounts", "entries"])) {

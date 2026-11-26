@@ -27,7 +27,7 @@
       <label>ตั้งแต่ <input type="date" id="ledger-from"></label>
       <label>ถึง <input type="date" id="ledger-to"></label>
       <label class="grow">ค้นหารายการ <input type="search" id="ledger-search" placeholder="คำอธิบาย / เลขที่เอกสาร"></label>
-      <label class="check" title="ไม่ติ๊ก = ยอดคงเหลือนับเฉพาะรายการในช่วงที่เลือก"><input type="checkbox" id="ledger-include-opening"> รวมยอดยกมา</label>
+      <label class="check switch" title="เปิด = แสดงยอดยกมาเป็นบรรทัดแรกของแต่ละบัญชี และนับรวมในยอดคงเหลือ · ปิด = นับเฉพาะรายการในช่วงที่เลือก"><input type="checkbox" id="ledger-include-opening"><span class="switch-track" aria-hidden="true"></span><span>ยอดยกมา</span></label>
       <label class="check"><input type="checkbox" id="ledger-hide-empty" checked> ซ่อนบัญชีที่ไม่มีความเคลื่อนไหว</label>
     </div>
     <div id="ledger-view"><div class="skeleton"></div></div>
