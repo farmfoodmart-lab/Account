@@ -15,7 +15,7 @@
  *   เลือก/พิมพ์ชื่อที่มีแม่แบบคำอธิบายอัตโนมัติ → เติมคำอธิบายและบัญชีให้
  *   ชื่อรายการไม่ใช่คู่ค้า จึงเก็บในช่อง itemName (ไม่เข้าทะเบียนลูกหนี้/เจ้าหนี้)
  */
-import { commitChanges, loadData, onDataRefresh, state } from "../../src/core/store.js";
+import { commitChanges, getSaveLock, loadData, onDataRefresh, state } from "../../src/core/store.js";
 import { ACCOUNT_TYPE_LABELS, AMOUNT_EPSILON, ENTRY_KIND_LABELS } from "../../src/accounting/constants.js";
 import { calculateEntryTotal, getEntryKind } from "../../src/accounting/rules.js";
 import { findAccountById, getSortedAccounts, renderAccountOptions } from "../../src/accounting/accounts.js";
@@ -885,6 +885,12 @@ function buildSupplierForNewName(entryData) {
 
 async function handleFormSubmit(event) {
   event.preventDefault();
+  // กำลังซ่อมแซมเลขที่เอกสาร (ล็อกการบันทึก) → ไม่ล้างฟอร์ม ให้กดบันทึกใหม่เมื่อซ่อมแซมเสร็จ
+  const saveLock = getSaveLock();
+  if (saveLock) {
+    await notifyError(saveLock.message, { title: "ยังบันทึกรายการไม่ได้" });
+    return;
+  }
   const result = readEntryForm();
   if (result.error) {
     await notifyError(result.error, { title: "ยังบันทึกรายการไม่ได้" });

@@ -1032,7 +1032,13 @@ function startSave(keys) {
  *                         ไม่ระบุ = บันทึกทั้งหมด (ใช้ตอนนำเข้า/กู้คืน)
  * @returns {Promise<boolean>} true เมื่อบันทึกสำเร็จ
  */
-export function saveData(keys) {
+export function saveData(keys, { ignoreSaveLock = false } = {}) {
+  // มีงานที่ล็อกการบันทึกอยู่ (เช่น กำลังซ่อมแซมเลขที่เอกสาร) → ทุกหน้าบันทึกไม่ได้จนกว่างานนั้นจะเสร็จ
+  const saveLock = ignoreSaveLock ? null : getSaveLock();
+  if (saveLock) {
+    notifyError(saveLock.message || "ระบบกำลังทำงานเบื้องหลัง ยังบันทึกไม่ได้ กรุณารอสักครู่");
+    return Promise.resolve(false);
+  }
   if (!activeSave) {
     const run = startSave(keys);
     // ล้มเหลว แต่ระหว่างนั้นมีการบันทึกเข้าคิว (ซึ่งรวมข้อมูลนี้อยู่แล้ว) → ใช้ผลของครั้งถัดไป
@@ -1056,9 +1062,70 @@ export function hasPendingSave() {
   return Boolean(activeSave || queuedSave);
 }
 
+/* ------------------------------------------------------------------ */
+/* ล็อกการบันทึก (ใช้ร่วมกันทุกหน้า/ทุกแท็บผ่าน localStorage)               */
+/* ------------------------------------------------------------------ */
+
+/** คีย์ใน localStorage — ห้ามเปลี่ยน (ล็อกที่ค้างอยู่ในเครื่องผู้ใช้จะอ่านไม่ได้) */
+const SAVE_LOCK_STORAGE_KEY = "accounting-save-lock";
+
+/**
+ * @typedef {object} SaveLock
+ * @property {string} reason รหัสงาน เช่น "doc-number-repair"
+ * @property {string} message ข้อความที่แจ้งเมื่อพยายามบันทึกระหว่างนั้น
+ * @property {number} startedAt
+ * @property {string} [ownerId] หน้าที่กำลังทำงานนี้อยู่
+ * @property {number} [heartbeatAt] เวลาล่าสุดที่หน้านั้นยืนยันว่ายังทำอยู่ (เงียบไปนาน = หน้าอื่นรับช่วงต่อได้)
+ */
+
+/**
+ * ล็อกการบันทึกที่ค้างอยู่ — มีล็อก = ทุกหน้าบันทึกไม่ได้ (ยกเว้นงานที่ถือล็อก)
+ * @returns {SaveLock | null}
+ */
+export function getSaveLock() {
+  try {
+    const lock = JSON.parse(localStorage.getItem(SAVE_LOCK_STORAGE_KEY) || "null");
+    return lock && typeof lock === "object" && lock.reason ? lock : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ตั้ง/ปลดล็อกการบันทึก
+ * @param {SaveLock | null} lock null = ปลดล็อก
+ */
+export function setSaveLock(lock) {
+  try {
+    if (lock) localStorage.setItem(SAVE_LOCK_STORAGE_KEY, JSON.stringify(lock));
+    else localStorage.removeItem(SAVE_LOCK_STORAGE_KEY);
+  } catch (error) {
+    console.warn("บันทึกสถานะล็อกการบันทึกไม่สำเร็จ", error);
+  }
+}
+
+/**
+ * รอให้การซิงก์กับเซิร์ฟเวอร์ที่กำลังทำอยู่เสร็จ
+ * @returns {Promise<boolean>} ซิงก์กับเซิร์ฟเวอร์สำเร็จแล้วหรือยัง
+ */
+export async function waitForSync() {
+  while (pendingSync) {
+    const current = pendingSync;
+    await current;
+    if (pendingSync === current) break;
+  }
+  return isSynced;
+}
+
+/** หน้านี้โหลดชุดข้อมูลนี้แล้วหรือยัง @param {string} collection */
+export function isCollectionLoaded(collection) {
+  return loadedCollections.has(collection);
+}
+
 // ปิด/เปลี่ยนหน้าระหว่างที่ยังส่งข้อมูลไม่เสร็จ → ให้เบราว์เซอร์ถามยืนยันก่อน
+// ยกเว้นระหว่างที่มีล็อกการบันทึก (เช่น ซ่อมแซมเลขที่เอกสาร) — หน้าถัดไปจะทำงานนั้นต่อให้เองจนเสร็จ
 window.addEventListener("beforeunload", (event) => {
-  if (!hasPendingSave()) return;
+  if (!hasPendingSave() || getSaveLock()) return;
   event.preventDefault();
   event.returnValue = "";
 });
@@ -1069,19 +1136,20 @@ window.addEventListener("beforeunload", (event) => {
  *
  * @param {Partial<AppState>} changes ฟิลด์ที่เปลี่ยน เช่น { entries: newEntries }
  * @param {string[]} [keysToSave] ชุดข้อมูลที่ต้องบันทึก (ค่าเริ่มต้น = คีย์ทั้งหมดใน changes)
+ * @param {{ ignoreSaveLock?: boolean }} [options] ignoreSaveLock = งานที่ถือล็อกการบันทึกอยู่เอง
  * @returns {Promise<boolean>} true เมื่อบันทึกสำเร็จ
  *
  * @example
  * const saved = await commitChanges({ accounts: [...state.accounts, newAccount] });
  * if (saved) notifySuccess("เพิ่มบัญชีเรียบร้อย");
  */
-export function commitChanges(changes, keysToSave = Object.keys(changes)) {
+export function commitChanges(changes, keysToSave = Object.keys(changes), options = {}) {
   // เก็บเฉพาะ "ค่าเดิมของคีย์ที่เปลี่ยน" ไว้คืนค่า (ไม่ต้องคัดลอกทั้ง state ซึ่งช้ามากเมื่อข้อมูลเยอะ)
   // ปลอดภัยเพราะทุกหน้าสร้างอาร์เรย์ใหม่เสมอ ไม่แก้อาร์เรย์เดิมโดยตรง
   const previousValues = Object.fromEntries(Object.keys(changes).map((key) => [key, state[key]]));
   // state เปลี่ยน "ทันที" ก่อนเริ่มบันทึก → หน้าเว็บวาดผลลัพธ์ได้เลยโดยไม่ต้องรอเซิร์ฟเวอร์ (optimistic update)
   replaceState({ ...state, ...changes });
-  return saveData(keysToSave).then((isSaved) => {
+  return saveData(keysToSave, options).then((isSaved) => {
     if (!isSaved) {
       // คืนเป็นค่าที่ตรงกับเซิร์ฟเวอร์ล่าสุด (ถ้ามี) — ถูกต้องแม้มีหลายการบันทึกซ้อนกัน
       const rollback = Object.fromEntries(Object.keys(previousValues).map((key) => [

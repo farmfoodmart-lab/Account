@@ -9,6 +9,7 @@
  * (ข้อมูลเก็บใน state.autoDesc — ชื่อนี้ถูกบันทึกในฐานข้อมูลแล้ว จึงคงไว้)
  */
 import { commitChanges, loadData, onDataRefresh, state } from "../../src/core/store.js";
+import { watchDocumentNumberRepair } from "../../src/components/document-number-repair-job.js";
 import { findAccountById, renderAccountOptions } from "../../src/accounting/accounts.js";
 import {
   getCustomerDisplayName,
@@ -263,6 +264,7 @@ cancelButton.addEventListener("click", () => {
 ruleForm.addEventListener("submit", handleFormSubmit);
 
 if (await loadData(["autoDesc", "accounts", "customers", "suppliers", "customerNames"])) {
+  watchDocumentNumberRepair();
   syncTypeFields();
   renderPage();
   onDataRefresh(renderPage);

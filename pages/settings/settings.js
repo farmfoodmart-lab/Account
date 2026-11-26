@@ -30,6 +30,11 @@ import { byId } from "../../src/utils/dom.js";
 import { downloadJson } from "../../src/utils/download.js";
 import { escapeHtml, formatDate, formatMoney, formatNumber } from "../../src/utils/format.js";
 import { watchDocumentNumbers } from "../../src/components/document-number-alert.js";
+import {
+  isDocumentNumberRepairPending,
+  onDocumentNumberRepairChange,
+  runDocumentNumberRepair,
+} from "../../src/components/document-number-repair-job.js";
 
 const settingsForms = [byId("settings-form"), byId("settings-features-form")];
 const supplierPaymentSelect = byId("settings-supplier-payment-method");
@@ -279,10 +284,52 @@ function getDocumentNumberPlan() {
   return documentNumberCheck.plan;
 }
 
+/** กำลังซ่อมแซมอยู่ → ไม่วาดการ์ดทับตัวเลขที่กำลังนับถอยหลัง */
+let isRepairing = false;
+/** นับถอยหลังให้จบภายในราว ๆ นี้ (มิลลิวินาที) — ลดทีละ 1 เสมอ รายการเยอะ = ตัวเลขวิ่งเร็วขึ้น */
+const REPAIR_COUNTDOWN_MS = 2500;
+const REPAIR_IN_PROGRESS_TEXT = "กำลังซ่อมแซมเลขที่เอกสาร — ไปหน้าอื่นได้ ระบบจะซ่อมแซมต่อจนเสร็จ แต่ระหว่างนี้ทุกหน้ายังบันทึกไม่ได้";
+
+/** ป้าย "ต้องซ่อมแซม N รายการ" มุมขวาบนของการ์ด */
+function renderRepairStatusBadge(remainingCount) {
+  byId("repair-status").innerHTML = `<span class="badge warning dot">ต้องซ่อมแซม ${formatNumber(remainingCount)} รายการ</span>`;
+}
+
+/**
+ * นับถอยหลังตัวเลขบนป้ายทีละ 1 จาก totalCount ถึง 0
+ * @param {number} totalCount
+ * @returns {Promise<void>} resolve เมื่อถึง 0
+ */
+function countDownRepairStatus(totalCount) {
+  return new Promise((resolve) => {
+    const startTime = performance.now();
+    let remainingCount = totalCount;
+    const tick = (now) => {
+      // ควรเหลือเท่าไรตามเวลาที่ผ่านไป แต่แต่ละรอบลดลงได้ทีละ 1 เท่านั้น (ไม่ข้ามตัวเลข)
+      const targetCount = Math.max(0, Math.ceil(totalCount * (1 - (now - startTime) / REPAIR_COUNTDOWN_MS)));
+      while (remainingCount > targetCount) {
+        remainingCount -= 1;
+        renderRepairStatusBadge(remainingCount);
+      }
+      if (remainingCount <= 0) resolve();
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
 /** สถานะเลขที่เอกสาร: ไม่มีเลขที่ / ข้ามเลข / ไม่เรียงตามวันที่ / ปีเดือนไม่ตรงกับวันที่ / เลขซ้ำ */
 function renderDocumentNumberRepair() {
-  const plan = getDocumentNumberPlan();
+  if (isRepairing) return;
   const repairButton = byId("doc-number-repair");
+  // กดซ่อมแซมจากหน้าอื่น/ก่อนเปลี่ยนหน้า และยังทำไม่เสร็จ
+  if (isDocumentNumberRepairPending()) {
+    repairButton.disabled = true;
+    byId("repair-status").innerHTML = '<span class="badge warning dot">กำลังซ่อมแซม…</span>';
+    byId("repair-detail").textContent = REPAIR_IN_PROGRESS_TEXT;
+    return;
+  }
+  const plan = getDocumentNumberPlan();
   repairButton.disabled = !plan.changedCount;
   if (!plan.changedCount) {
     byId("repair-status").innerHTML = '<span class="badge success dot">เรียงถูกต้องแล้ว</span>';
@@ -290,7 +337,7 @@ function renderDocumentNumberRepair() {
     return;
   }
   const missingCount = state.entries.filter((entry) => !entry.docNo).length;
-  byId("repair-status").innerHTML = `<span class="badge warning dot">ต้องซ่อมแซม ${formatNumber(plan.changedCount)} รายการ</span>`;
+  renderRepairStatusBadge(plan.changedCount);
   byId("repair-detail").textContent = [
     `${formatNumber(plan.changedCount)} รายการใน ${formatNumber(plan.monthCount)} เดือน มีเลขที่เอกสารไม่เรียงตามวันที่หรือข้ามเลข`,
     missingCount ? `(รวมที่ยังไม่มีเลขที่ ${formatNumber(missingCount)} รายการ)` : "",
@@ -312,13 +359,25 @@ async function repairDocumentNumbers() {
     "",
     "เลขที่เดิมของรายการจะเปลี่ยน แนะนำให้ดาวน์โหลดไฟล์สำรองก่อน (การ์ดสำรอง / กู้คืนข้อมูล ด้านล่าง)",
     "หากเปิดหน้าสมุดรายวันค้างไว้ ควรบันทึกหรือล้างฟอร์มที่กำลังกรอกก่อน",
+    "ระหว่างซ่อมแซมไปหน้าอื่นได้ แต่ทุกหน้าจะบันทึกไม่ได้จนกว่าจะซ่อมแซมเสร็จ",
   ].filter((line) => line !== null).join("\n");
   const confirmed = await confirmDialog(message, { title: "ซ่อมแซมลำดับเลขที่เอกสาร", confirmText: "ซ่อมแซม", tone: "primary" });
   if (!confirmed) return;
 
-  const isSaved = await commitChanges({ entries: plan.entries });
+  // บันทึกไปพร้อมกับนับถอยหลังตัวเลขบนป้าย (รอให้ทั้งสองอย่างเสร็จ)
+  // งานซ่อมแซมล็อกการบันทึกทุกหน้าไว้ ถ้าผู้ใช้เปลี่ยนหน้ากลางคัน หน้าถัดไปจะทำต่อจนเสร็จ
+  isRepairing = true;
+  byId("doc-number-repair").disabled = true;
+  byId("repair-detail").textContent = REPAIR_IN_PROGRESS_TEXT;
+  let result = { isSaved: false, changedCount: 0 };
+  try {
+    [result] = await Promise.all([runDocumentNumberRepair(), countDownRepairStatus(plan.changedCount)]);
+  } finally {
+    isRepairing = false;
+  }
   renderSettingsPage();
-  if (isSaved) notifySuccess(`ซ่อมแซมเลขที่เอกสาร ${formatNumber(plan.changedCount)} รายการเรียบร้อย`);
+  if (result.isSaved) notifySuccess(`ซ่อมแซมเลขที่เอกสาร ${formatNumber(result.changedCount || plan.changedCount)} รายการเรียบร้อย`);
+  else notifyError("ซ่อมแซมลำดับเลขที่เอกสารยังไม่สำเร็จ ระบบจะลองใหม่อัตโนมัติ (ระหว่างนี้ยังบันทึกไม่ได้)");
 }
 
 /* ------------------------------------------------------------------ */
@@ -431,6 +490,8 @@ if (await loadData()) {
   watchDocumentNumbers();
   renderSettingsPage();
   onDataRefresh(renderSettingsPage);
+  // ซ่อมแซมที่ค้างไว้ทำต่อเสร็จ (ในหน้านี้หรือแท็บอื่น) → วาดการ์ดใหม่
+  onDocumentNumberRepairChange(renderSettingsPage);
   const currentUser = await authReady;
   if (currentUser) byId("settings-user").textContent = `เข้าสู่ระบบเป็น ${currentUser.email || ""}`;
 }

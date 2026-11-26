@@ -11,6 +11,7 @@
 import { onDataRefresh, state } from "../core/store.js";
 import { planDocumentNumberRepair } from "../accounting/journal.js";
 import { clearStandingAlert, setStandingAlert } from "./notifications.js";
+import { watchDocumentNumberRepair } from "./document-number-repair-job.js";
 
 const ALERT_ID = "doc-number-repair";
 /** ตรวจว่ารายการเปลี่ยนไหมทุก ๆ กี่มิลลิวินาที (เปรียบเทียบแค่การอ้างอิงอาร์เรย์ — ถูกมาก) */
@@ -54,6 +55,8 @@ function scheduleCheck() {
  * ตรวจครั้งแรกทันที แล้วตรวจใหม่เมื่อรายการเปลี่ยน (บันทึกในหน้านี้ หรือซิงก์ได้ข้อมูลใหม่)
  */
 export function watchDocumentNumbers() {
+  // กดซ่อมแซมแล้วเปลี่ยนหน้ากลางคัน → หน้านี้ซ่อมแซมต่อจนเสร็จ
+  watchDocumentNumberRepair();
   scheduleCheck();
   onDataRefresh(scheduleCheck);
   window.setInterval(scheduleCheck, CHECK_INTERVAL_MS);

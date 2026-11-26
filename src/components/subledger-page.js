@@ -8,6 +8,7 @@
  * - ย้ายข้อมูลลูกหนี้/เจ้าหนี้ที่บันทึกด้วยระบบเดิม ให้มาอยู่ในสมุดรายวัน (ครั้งเดียว)
  */
 import { commitChanges, loadData, onDataRefresh, state } from "../core/store.js";
+import { watchDocumentNumberRepair } from "./document-number-repair-job.js";
 import { AMOUNT_EPSILON } from "../accounting/constants.js";
 import { findAccountForRole, formatAccountLabel } from "../accounting/accounts.js";
 import { findCustomerById, formatCustomerLabel } from "../accounting/customers.js";
@@ -479,6 +480,7 @@ export async function initSubledgerPage(subledgerType) {
   }
 
   if (!(await loadData(["accounts", "entries", "customers", "suppliers", settings.legacyCollection]))) return;
+  watchDocumentNumberRepair();
   renderPage();
   if (dateFromInput && dateToInput) {
     // รายการเดือนมาจากวันที่ของเอกสารในทะเบียน

@@ -2,6 +2,7 @@
  * @file หน้า "เอกสารรับเข้า" — แสดงและลบเอกสารซื้อ/ค่าใช้จ่ายที่นำเข้าจากไฟล์ Excel
  */
 import { commitChanges, loadData, onDataRefresh, state } from "../../src/core/store.js";
+import { watchDocumentNumberRepair } from "../../src/components/document-number-repair-job.js";
 import { notifySuccess } from "../../src/components/notifications.js";
 import { confirmDialog } from "../../src/components/dialogs.js";
 import { renderImportedFileList } from "../../src/components/imported-file-list.js";
@@ -40,6 +41,7 @@ tableBody.addEventListener("click", async (event) => {
 });
 
 if (await loadData(["incomingDocs"])) {
+  watchDocumentNumberRepair();
   renderIncomingDocuments();
   renderImportedFileList("incoming-document-import-files", "incoming_docs", renderIncomingDocuments);
   onDataRefresh(renderIncomingDocuments);
